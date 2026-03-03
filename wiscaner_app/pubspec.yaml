@@ -1,0 +1,62 @@
+name: wiscaner
+description: "독립 문서 스캐너 앱 - Winote 스캐너 기능 분리"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # 파일 처리
+  path_provider: ^2.1.0
+  path: ^1.8.0
+
+  # PDF 생성
+  syncfusion_flutter_pdf: ^28.1.0
+
+  # 이미지 선택
+  image_picker: ^1.1.2
+
+  # 카메라
+  camera: ^0.11.0
+  camera_windows: ^0.2.0
+
+  # 이미지 처리
+  image: ^4.3.0
+  opencv_dart: ^1.4.3
+  dartcv4: ^1.1.6
+
+  # 음성 인식
+  speech_to_text: ^7.0.0
+
+  # 파일 선택 및 공유
+  file_picker: ^6.1.0
+  share_plus: ^7.2.0
+
+  # 딥러닝 문서 감지
+  onnxruntime: ^1.4.1
+
+  # 권한 관리
+  permission_handler: ^11.0.0
+
+  # 설정 저장
+  shared_preferences: ^2.2.0
+
+  # 유틸리티
+  uuid: ^4.2.0
+  intl: ^0.18.0
+  collection: ^1.18.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/models/

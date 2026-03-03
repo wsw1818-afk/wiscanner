@@ -1,0 +1,17 @@
+# Build outputs
+wiscaner_app/build/
+wiscaner_app/.dart_tool/
+wiscaner_app/.flutter-plugins
+wiscaner_app/.flutter-plugins-dependencies
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/

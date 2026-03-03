@@ -1,0 +1,1 @@
+🐛 스캔선 좌표 불일치 수정: sensorOrientation 기반 Y plane 회전 방향 보정

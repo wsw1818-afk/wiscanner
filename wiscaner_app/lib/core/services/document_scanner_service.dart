@@ -118,7 +118,7 @@ class DocumentScannerService {
     if (_scanCacheDir != null) return _scanCacheDir!;
     final appDir = await getApplicationDocumentsDirectory();
     _scanCacheDir =
-        '${appDir.path}${Platform.pathSeparator}WiScaner${Platform.pathSeparator}scan_cache';
+        '${appDir.path}${Platform.pathSeparator}WiScanner${Platform.pathSeparator}scan_cache';
     final dir = Directory(_scanCacheDir!);
     if (!await dir.exists()) {
       await dir.create(recursive: true);
@@ -129,7 +129,7 @@ class DocumentScannerService {
   Future<String> get scanSaveDirectory async {
     final appDir = await getApplicationDocumentsDirectory();
     final dir = Directory(
-        '${appDir.path}${Platform.pathSeparator}WiScaner${Platform.pathSeparator}scans');
+        '${appDir.path}${Platform.pathSeparator}WiScanner${Platform.pathSeparator}scans');
     if (!await dir.exists()) {
       await dir.create(recursive: true);
     }
@@ -1585,9 +1585,9 @@ class DocumentScannerService {
       final extDir = await getExternalStorageDirectory();
       if (extDir != null) {
         // getExternalStorageDirectory()는 /storage/.../Android/data/... 를 반환
-        // 공용 Pictures 폴더로 변경: /storage/emulated/0/Pictures/WiScaner
+        // 공용 Pictures 폴더로 변경: /storage/emulated/0/Pictures/WiScanner
         final parts = extDir.path.split('Android');
-        final publicPath = '${parts[0]}Pictures${Platform.pathSeparator}WiScaner';
+        final publicPath = '${parts[0]}Pictures${Platform.pathSeparator}WiScanner';
         final dir = Directory(publicPath);
         if (!await dir.exists()) await dir.create(recursive: true);
         return publicPath;

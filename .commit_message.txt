@@ -1,1 +1,1 @@
-🐛 스캔선 좌표 불일치 수정: sensorOrientation 기반 Y plane 회전 방향 보정
+✏️ 앱 이름 변경: wiscaner → WiScanner (UI/매니페스트/저장 경로)

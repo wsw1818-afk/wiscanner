@@ -40,7 +40,7 @@ class _SettingsPageState extends State<SettingsPage> {
         final extDir = await getExternalStorageDirectory();
         if (extDir != null) {
           final parts = extDir.path.split('Android');
-          final scanDir = Directory('${parts[0]}Pictures${Platform.pathSeparator}WiScaner');
+          final scanDir = Directory('${parts[0]}Pictures${Platform.pathSeparator}WiScanner');
           if (await scanDir.exists()) {
             final files = await scanDir.list().toList();
             int totalSize = 0;
@@ -134,7 +134,7 @@ class _SettingsPageState extends State<SettingsPage> {
           ListTile(
             leading: const Icon(Icons.folder),
             title: const Text('저장 위치'),
-            subtitle: const Text('Pictures/WiScaner'),
+            subtitle: const Text('Pictures/WiScanner'),
             trailing: Text(_storageInfo, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
           ),
 
@@ -167,7 +167,7 @@ class _SettingsPageState extends State<SettingsPage> {
           _buildSectionHeader('앱 정보'),
           const ListTile(
             leading: Icon(Icons.info_outline),
-            title: Text('WiScaner'),
+            title: Text('WiScanner'),
             subtitle: Text('버전 1.0.0'),
           ),
           ListTile(
@@ -175,7 +175,7 @@ class _SettingsPageState extends State<SettingsPage> {
             title: const Text('오픈소스 라이선스'),
             onTap: () => showLicensePage(
               context: context,
-              applicationName: 'WiScaner',
+              applicationName: 'WiScanner',
               applicationVersion: '1.0.0',
             ),
           ),

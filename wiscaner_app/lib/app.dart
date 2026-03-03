@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 import 'presentation/pages/home/home_page.dart';
 
-class WiScanerApp extends StatelessWidget {
-  const WiScanerApp({super.key});
+class WiScannerApp extends StatelessWidget {
+  const WiScannerApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'WiScaner',
+      title: 'WiScanner',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorSchemeSeed: Colors.blue,

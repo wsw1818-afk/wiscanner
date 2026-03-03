@@ -34,11 +34,11 @@ class _HomePageState extends State<HomePage> {
       final extDir = await getExternalStorageDirectory();
       if (extDir != null) {
         final parts = extDir.path.split('Android');
-        return '${parts[0]}Pictures${Platform.pathSeparator}WiScaner';
+        return '${parts[0]}Pictures${Platform.pathSeparator}WiScanner';
       }
     }
     final appDir = await getApplicationDocumentsDirectory();
-    return '${appDir.path}${Platform.pathSeparator}WiScaner${Platform.pathSeparator}scans';
+    return '${appDir.path}${Platform.pathSeparator}WiScanner${Platform.pathSeparator}scans';
   }
 
   Future<void> _loadScanFiles() async {
@@ -125,7 +125,7 @@ class _HomePageState extends State<HomePage> {
       title: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('WiScaner'),
+          const Text('WiScanner'),
           if (_scanFiles.isNotEmpty)
             Text('${_scanFiles.length}개 파일',
                 style: TextStyle(fontSize: 12, color: Colors.grey[600])),

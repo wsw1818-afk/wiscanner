@@ -595,16 +595,9 @@ class _ScannerPageState extends State<ScannerPage> {
 
   void _navigateToCrop(String imagePath) {
     _stopAutoDetection();
-    // 실시간 감지에서 확보한 좌표를 전달 → CropPage에서 재감지 건너뜀
-    final preDetectedCorners = (_smoothedCorners != null && _smoothedCorners!.length == 4)
-        ? List<Offset>.from(_smoothedCorners!)
-        : null;
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => CropPage(
-          imagePath: imagePath,
-          preDetectedCorners: preDetectedCorners,
-        ),
+        builder: (_) => CropPage(imagePath: imagePath),
       ),
     ).then((_) {
       if (mounted) {

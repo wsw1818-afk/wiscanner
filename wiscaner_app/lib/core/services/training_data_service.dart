@@ -82,35 +82,33 @@ class TrainingDataService {
 
       // 1) Y plane → 256×256 PNG (모델 입력과 동일한 방식)
       const inputSize = 256;
-      final int portW = needsRotation ? srcHeight : srcWidth;
-      final int portH = needsRotation ? srcWidth : srcHeight;
-      final double scaleX = portW / inputSize;
-      final double scaleY = portH / inputSize;
       final int yLen = yBytes.length;
 
-      final inputImage = img.Image(width: inputSize, height: inputSize);
-      for (int oy = 0; oy < inputSize; oy++) {
-        final int portY = (oy * scaleY).toInt().clamp(0, portH - 1);
-        for (int ox = 0; ox < inputSize; ox++) {
-          final int portX = (ox * scaleX).toInt().clamp(0, portW - 1);
-
-          int rawX, rawY;
-          if (needsRotation && sensorOrientation == 90) {
-            rawX = portY;
-            rawY = (srcWidth - 1 - portX).clamp(0, srcWidth - 1);
-          } else if (needsRotation && sensorOrientation == 270) {
-            rawX = (srcHeight - 1 - portY).clamp(0, srcHeight - 1);
-            rawY = portX;
-          } else {
-            rawX = portX;
-            rawY = portY;
-          }
-
-          final idx = rawY * bytesPerRow + rawX;
-          final v = (idx >= 0 && idx < yLen) ? yBytes[idx] : 0;
-          inputImage.setPixelRgb(ox, oy, v, v, v);
+      // Y plane → 원본 크기 img.Image
+      final yImage = img.Image(width: srcWidth, height: srcHeight);
+      for (int y = 0; y < srcHeight; y++) {
+        final rowStart = y * bytesPerRow;
+        for (int x = 0; x < srcWidth; x++) {
+          final idx = rowStart + x;
+          final v = (idx < yLen) ? yBytes[idx] : 0;
+          yImage.setPixelRgb(x, y, v, v, v);
         }
       }
+
+      // CameraPreview와 동일하게 회전
+      img.Image portrait;
+      if (needsRotation && sensorOrientation == 90) {
+        portrait = img.copyRotate(yImage, angle: 90);
+      } else if (needsRotation && sensorOrientation == 270) {
+        portrait = img.copyRotate(yImage, angle: -90);
+      } else {
+        portrait = yImage;
+      }
+
+      // 256×256으로 리사이즈 (모델 입력과 동일)
+      final inputImage = img.copyResize(portrait,
+          width: inputSize, height: inputSize,
+          interpolation: img.Interpolation.linear);
 
       final pngPath = '$dir${Platform.pathSeparator}$baseName.png';
       File(pngPath).writeAsBytesSync(img.encodePng(inputImage));

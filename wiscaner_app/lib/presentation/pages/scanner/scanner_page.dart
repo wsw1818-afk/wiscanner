@@ -540,8 +540,30 @@ class _ScannerPageState extends State<ScannerPage> {
             _startAutoDetection();
           }
         }
+      } else if (TrainingDataService.instance.enabled) {
+        // 수집 모드: 데이터만 저장하고 바로 다음 촬영
+        _collectTrainingData(xFile.path);
+        _resetDetectionState();
+        if (mounted) {
+          setState(() {
+            _isCapturing = false;
+            _showCapturedFeedback = true;
+          });
+          await Future.delayed(const Duration(milliseconds: 800));
+          if (mounted) {
+            setState(() => _showCapturedFeedback = false);
+            if (_autoMode) _startAutoDetection();
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('수집 완료 (${await TrainingDataService.instance.getCount()}개)'),
+                duration: const Duration(seconds: 1),
+                backgroundColor: Colors.blue,
+              ),
+            );
+          }
+        }
       } else {
-        // 학습 데이터 수집 (비동기, UI 블록 안 함)
+        // 일반 모드: 크롭 페이지로 이동
         _collectTrainingData(xFile.path);
         if (mounted) _navigateToCrop(xFile.path);
       }

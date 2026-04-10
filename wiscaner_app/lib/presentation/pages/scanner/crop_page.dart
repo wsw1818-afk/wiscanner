@@ -10,11 +10,14 @@ import 'result_page.dart';
 class CropPage extends StatefulWidget {
   final String imagePath;
   final List<String>? batchImages;
+  /// 실시간 감지에서 이미 확보한 좌표 (있으면 재감지 건너뜀)
+  final List<Offset>? preDetectedCorners;
 
   const CropPage({
     super.key,
     required this.imagePath,
     this.batchImages,
+    this.preDetectedCorners,
   });
 
   @override
@@ -63,20 +66,18 @@ class _CropPageState extends State<CropPage> {
       _previewPath = null;
     });
 
-    // 이미지 크기 읽기
-    try {
-      final file = File(_currentImagePath);
-      final bytes = await file.readAsBytes();
-      final codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
-      _imageSize = Size(frame.image.width.toDouble(), frame.image.height.toDouble());
-      frame.image.dispose();
-    } catch (_) {
-      _imageSize = null;
-    }
+    // 이미지 크기 읽기 (재조정 모드에서만 필요, 비동기로 처리)
+    _loadImageSize();
 
-    // 코너 감지
-    final corners = await _scanner.detectDocumentCorners(_currentImagePath);
+    // 실시간 감지에서 이미 좌표를 받았으면 재감지 건너뜀
+    List<Offset> corners;
+    if (widget.preDetectedCorners != null &&
+        widget.preDetectedCorners!.length == 4 &&
+        _currentBatchIndex == 0) {
+      corners = widget.preDetectedCorners!;
+    } else {
+      corners = await _scanner.detectDocumentCorners(_currentImagePath);
+    }
 
     if (!mounted) return;
 
@@ -89,6 +90,21 @@ class _CropPageState extends State<CropPage> {
     final isDefault = _isDefaultCorners(corners);
     if (!isDefault) {
       await _applyPreview();
+    }
+  }
+
+  Future<void> _loadImageSize() async {
+    try {
+      final file = File(_currentImagePath);
+      final bytes = await file.readAsBytes();
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      if (mounted) {
+        _imageSize = Size(frame.image.width.toDouble(), frame.image.height.toDouble());
+      }
+      frame.image.dispose();
+    } catch (_) {
+      _imageSize = null;
     }
   }
 

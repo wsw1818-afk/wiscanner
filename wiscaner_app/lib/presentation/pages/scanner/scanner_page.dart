@@ -220,7 +220,7 @@ class _ScannerPageState extends State<ScannerPage> {
 
   void _onCameraFrame(CameraImage image) {
     final now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _lastDetectionMs < 150) return;
+    if (now - _lastDetectionMs < 300) return;
     if (_isDetecting || _isCapturing || _showCapturedFeedback) return;
 
     _lastDetectionMs = now;
@@ -257,8 +257,8 @@ class _ScannerPageState extends State<ScannerPage> {
         corners = dlResult.corners;
       }
 
-      // 전략 2: OpenCV fallback
-      if (corners == null || _isDefaultCorners(corners)) {
+      // 전략 2: OpenCV fallback (DocAligner 3회 연속 실패 시에만)
+      if ((corners == null || _isDefaultCorners(corners)) && _noDetectionCount >= 3) {
         try {
           final cvCorners = await DocumentScannerService.instance
               .detectCornersFromGrayscale(yBytes, width, height, bytesPerRow);
@@ -595,9 +595,16 @@ class _ScannerPageState extends State<ScannerPage> {
 
   void _navigateToCrop(String imagePath) {
     _stopAutoDetection();
+    // 실시간 감지에서 확보한 좌표를 전달 → CropPage에서 재감지 건너뜀
+    final preDetectedCorners = (_smoothedCorners != null && _smoothedCorners!.length == 4)
+        ? List<Offset>.from(_smoothedCorners!)
+        : null;
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => CropPage(imagePath: imagePath),
+        builder: (_) => CropPage(
+          imagePath: imagePath,
+          preDetectedCorners: preDetectedCorners,
+        ),
       ),
     ).then((_) {
       if (mounted) {

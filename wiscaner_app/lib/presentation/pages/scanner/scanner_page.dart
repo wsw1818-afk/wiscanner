@@ -8,6 +8,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'crop_page.dart';
 import '../../../core/services/document_scanner_service.dart';
 import '../../../core/services/doc_aligner_service.dart';
@@ -26,25 +27,28 @@ class _ScannerPageState extends State<ScannerPage> {
   bool _isCameraInitialized = false;
   bool _isCameraAvailable = false;
   bool _isCapturing = false;
+  bool _isStreamStarting = false;
 
   // 연속 촬영 모드
   bool _batchMode = false;
   final List<String> _batchImages = [];
 
+  // ID카드 모드
+  bool _idCardMode = false;
+  String? _idCardFrontPath;  // 앞면 촬영 완료 시
+
   // 자동 스캔 모드
   bool _autoMode = true;
   int _lastDetectionMs = 0;
-  List<Offset>? _detectedCorners;
   Map<String, dynamic>? _qualityInfo;
-  DocumentSize? _documentSize;
   int _stableFrameCount = 0;
   int _autoCountdown = 0;
   Timer? _countdownTimer;
-  static const int _requiredStableFrames = 5;
+  static const int _requiredStableFrames = 10;
 
   // 경계선 안정화
   List<Offset>? _smoothedCorners;
-  static const double _smoothingFactor = 0.20;
+  static const double _smoothingFactor = 0.35;
   static const int _bufferSize = 3;
   final List<List<Offset>> _cornerBuffer = [];
   int _noDetectionCount = 0;
@@ -54,6 +58,9 @@ class _ScannerPageState extends State<ScannerPage> {
   bool _showCapturedFeedback = false;
   bool _showCaptureFlash = false;
 
+  // 터치 촬영
+  bool _tapToCapture = false;
+
   // 음성 명령 촬영
   bool _voiceMode = false;
   final stt.SpeechToText _speech = stt.SpeechToText();
@@ -62,12 +69,37 @@ class _ScannerPageState extends State<ScannerPage> {
   @override
   void initState() {
     super.initState();
-    _initCamera();
-    _initSpeech();
+    _loadSettings();
+    _initCameraAndSpeech();
+  }
+
+  Future<void> _initCameraAndSpeech() async {
+    await _initCamera();
+    await _initSpeech();
+  }
+
+  Future<void> _loadSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        _autoMode = prefs.getBool('autoScan') ?? true;
+        _tapToCapture = prefs.getBool('tapToCapture') ?? false;
+      });
+    }
   }
 
   Future<void> _initSpeech() async {
     try {
+      // 마이크 권한 확인
+      final micStatus = await Permission.microphone.status;
+      if (!micStatus.isGranted) {
+        final result = await Permission.microphone.request();
+        if (!result.isGranted) {
+          debugPrint('마이크 권한 거부됨');
+          return;
+        }
+      }
+
       _speechInitialized = await _speech.initialize(
         onError: (error) => debugPrint('음성 인식 에러: $error'),
         onStatus: (status) => debugPrint('음성 인식 상태: $status'),
@@ -96,13 +128,16 @@ class _ScannerPageState extends State<ScannerPage> {
   void _stopListening() => _speech.stop();
 
   void _startAutoDetection() {
-    if (!_autoMode) return;
+    if (!_autoMode || _isStreamStarting) return;
     if (_cameraController == null || !_cameraController!.value.isInitialized) return;
     if (_cameraController!.value.isStreamingImages) return;
+    _isStreamStarting = true;
     try {
       _cameraController!.startImageStream(_onCameraFrame);
     } catch (e) {
       debugPrint('[스캐너] 이미지 스트림 시작 실패: $e');
+    } finally {
+      _isStreamStarting = false;
     }
   }
 
@@ -145,7 +180,7 @@ class _ScannerPageState extends State<ScannerPage> {
 
       _cameraController = CameraController(
         _cameras!.first,
-        ResolutionPreset.veryHigh,
+        ResolutionPreset.max,
         enableAudio: false,
       );
 
@@ -163,7 +198,9 @@ class _ScannerPageState extends State<ScannerPage> {
           _isCameraAvailable = true;
           _permissionDenied = false;
         });
-        _startAutoDetection();
+        // 카메라 초점/노출 안정화 대기 후 감지 시작
+        await Future.delayed(const Duration(seconds: 2));
+        if (mounted && _autoMode) _startAutoDetection();
       }
     } catch (e) {
       debugPrint('카메라 초기화 실패: $e');
@@ -183,7 +220,7 @@ class _ScannerPageState extends State<ScannerPage> {
 
   void _onCameraFrame(CameraImage image) {
     final now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _lastDetectionMs < 350) return;
+    if (now - _lastDetectionMs < 150) return;
     if (_isDetecting || _isCapturing || _showCapturedFeedback) return;
 
     _lastDetectionMs = now;
@@ -198,7 +235,6 @@ class _ScannerPageState extends State<ScannerPage> {
     final sensorOrientation = _cameras?.first.sensorOrientation ?? 0;
     final needsRotation = (sensorOrientation == 90 || sensorOrientation == 270)
         && width > height;
-    debugPrint('[스캐너] 프레임: ${width}x$height, sensor=$sensorOrientation, rotate=$needsRotation');
 
     _processFrame(yBytes, width, height, bytesPerRow, needsRotation, sensorOrientation);
   }
@@ -208,6 +244,7 @@ class _ScannerPageState extends State<ScannerPage> {
     bool needsRotation, int sensorOrientation,
   ) async {
     try {
+      // 전략 1: DocAligner (ONNX 딥러닝) — detectCorners와 동일 경로
       final dlResult = await DocAlignerService.instance
           .detectCornersFromYPlane(yBytes, width, height, bytesPerRow,
               needsRotation: needsRotation,
@@ -220,6 +257,17 @@ class _ScannerPageState extends State<ScannerPage> {
         corners = dlResult.corners;
       }
 
+      // 전략 2: OpenCV fallback
+      if (corners == null || _isDefaultCorners(corners)) {
+        try {
+          final cvCorners = await DocumentScannerService.instance
+              .detectCornersFromGrayscale(yBytes, width, height, bytesPerRow);
+          if (cvCorners.length == 4 && !_isDefaultCorners(cvCorners)) {
+            corners = cvCorners;
+          }
+        } catch (_) {}
+      }
+
       final isDefault = corners == null || _isDefaultCorners(corners);
 
       if (isDefault) {
@@ -229,15 +277,13 @@ class _ScannerPageState extends State<ScannerPage> {
           _stableFrameCount = 0;
           _autoCountdown = 0;
           setState(() {
-            _detectedCorners = null;
             _smoothedCorners = null;
             _qualityInfo = {'isGood': false, 'score': 0.0, 'issues': <String>['문서를 찾을 수 없음']};
-            _documentSize = null;
           });
         }
       } else {
         _noDetectionCount = 0;
-        final ordered = _orderCorners(corners);
+        final ordered = DocumentScannerService.orderCorners(corners);
         final smoothed = _applySmoothingToCorners(ordered);
 
         if (smoothed == null) {
@@ -249,9 +295,17 @@ class _ScannerPageState extends State<ScannerPage> {
         final quality = _quickQuality(corners, avgBright);
         final isGood = quality['isGood'] == true;
 
-        if (isGood) { _stableFrameCount++; } else { _stableFrameCount = 0; _autoCountdown = 0; }
+        if (isGood) {
+          _stableFrameCount++;
+        } else {
+          _stableFrameCount = 0;
+          if (_autoCountdown > 0) {
+            _countdownTimer?.cancel();
+            _countdownTimer = null;
+            _autoCountdown = 0;
+          }
+        }
         setState(() {
-          _detectedCorners = smoothed;
           _smoothedCorners = smoothed;
           _qualityInfo = quality;
         });
@@ -294,7 +348,7 @@ class _ScannerPageState extends State<ScannerPage> {
       area -= corners[j].dx * corners[i].dy;
     }
     area = area.abs() / 2;
-    if (area < 0.15) { issues.add('문서가 너무 작음'); score -= 25; }
+    if (area < 0.15) { issues.add('문서가 너무 작음'); score -= 30; }
 
     final sides = <double>[];
     for (int i = 0; i < 4; i++) {
@@ -306,73 +360,28 @@ class _ScannerPageState extends State<ScannerPage> {
     final r1 = sides[0] > 0 ? math.min(sides[0], sides[2]) / math.max(sides[0], sides[2]) : 0.0;
     final r2 = sides[1] > 0 ? math.min(sides[1], sides[3]) / math.max(sides[1], sides[3]) : 0.0;
     final angleScore = ((r1 + r2) / 2 * 100).clamp(0.0, 100.0);
-    if (angleScore < 60) { issues.add('각도가 기울어짐'); score -= 20; }
+    if (angleScore < 70) { issues.add('각도가 기울어짐'); score -= 25; }
 
-    if (!_isConvexQuad(corners)) {
+    if (!DocumentScannerService.isConvexQuad(corners)) {
       issues.add('영역이 올바르지 않음');
-      score -= 25;
+      score -= 30;
+    }
+
+    // 좌표 순서 검증: TL(좌상) TR(우상) BR(우하) BL(좌하)
+    // TL.x < TR.x, TL.y < BL.y, BR.x > BL.x, BR.y > TR.y
+    if (corners.length == 4) {
+      final tl = corners[0], tr = corners[1], br = corners[2], bl = corners[3];
+      if (tl.dx >= tr.dx || tl.dy >= bl.dy || br.dx <= bl.dx || br.dy <= tr.dy) {
+        issues.add('좌표 순서 이상');
+        score -= 40;
+      }
     }
 
     return {
-      'isGood': score >= 70 && issues.isEmpty,
+      'isGood': score >= 70,
       'score': score.clamp(0.0, 100.0),
       'issues': issues,
     };
-  }
-
-  bool _isConvexQuad(List<Offset> corners) {
-    if (corners.length != 4) return false;
-    bool? positive;
-    for (int i = 0; i < 4; i++) {
-      final a = corners[i];
-      final b = corners[(i + 1) % 4];
-      final c = corners[(i + 2) % 4];
-      final cross = (b.dx - a.dx) * (c.dy - b.dy) - (b.dy - a.dy) * (c.dx - b.dx);
-      if (cross.abs() < 1e-9) continue;
-      if (positive == null) {
-        positive = cross > 0;
-      } else if ((cross > 0) != positive) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  /// 꼭짓점을 좌상→우상→우하→좌하 순서로 정렬하여 사각형 유지
-  List<Offset> _orderCorners(List<Offset> corners) {
-    if (corners.length != 4) return corners;
-    final sorted = List<Offset>.from(corners);
-    // 중심점 계산
-    final cx = sorted.map((p) => p.dx).reduce((a, b) => a + b) / 4;
-    final cy = sorted.map((p) => p.dy).reduce((a, b) => a + b) / 4;
-    // 각도 기준 정렬 (좌상부터 시계방향)
-    final topLeft = sorted.where((p) => p.dx <= cx && p.dy <= cy).toList();
-    final topRight = sorted.where((p) => p.dx > cx && p.dy <= cy).toList();
-    final bottomRight = sorted.where((p) => p.dx > cx && p.dy > cy).toList();
-    final bottomLeft = sorted.where((p) => p.dx <= cx && p.dy > cy).toList();
-    // 각 사분면에 정확히 1개씩 있으면 정렬 적용
-    if (topLeft.length == 1 && topRight.length == 1 &&
-        bottomRight.length == 1 && bottomLeft.length == 1) {
-      return [topLeft[0], topRight[0], bottomRight[0], bottomLeft[0]];
-    }
-    // 불균형 시 atan2 기반 정렬
-    sorted.sort((a, b) {
-      final angleA = math.atan2(a.dy - cy, a.dx - cx);
-      final angleB = math.atan2(b.dy - cy, b.dx - cx);
-      return angleA.compareTo(angleB);
-    });
-    // atan2에서 좌상(−π 근처)이 첫 번째가 되도록 회전
-    // 가장 좌상 포인트 찾기
-    int tlIdx = 0;
-    double minSum = double.infinity;
-    for (int i = 0; i < 4; i++) {
-      final sum = sorted[i].dx + sorted[i].dy;
-      if (sum < minSum) { minSum = sum; tlIdx = i; }
-    }
-    return [
-      sorted[tlIdx], sorted[(tlIdx + 1) % 4],
-      sorted[(tlIdx + 2) % 4], sorted[(tlIdx + 3) % 4],
-    ];
   }
 
   bool _isDefaultCorners(List<Offset> corners) {
@@ -385,7 +394,7 @@ class _ScannerPageState extends State<ScannerPage> {
     for (int i = 0; i < 4; i++) {
       totalDist += (corners[i] - defaultCorners[i]).distance;
     }
-    return totalDist < 0.02;
+    return totalDist < 0.04;
   }
 
   List<Offset>? _applySmoothingToCorners(List<Offset> newCorners) {
@@ -461,25 +470,61 @@ class _ScannerPageState extends State<ScannerPage> {
     try {
       final xFile = await _cameraController!.takePicture();
 
-      if (_batchMode) {
+      if (_idCardMode) {
+        // ID카드 모드: 앞면 → 뒷면 순차 촬영
+        if (_idCardFrontPath == null) {
+          // 앞면 촬영 완료
+          setState(() {
+            _idCardFrontPath = xFile.path;
+            _isCapturing = false;
+            _showCapturedFeedback = true;
+          });
+          _resetDetectionState();
+          await Future.delayed(const Duration(milliseconds: 1200));
+          if (mounted) {
+            setState(() => _showCapturedFeedback = false);
+            if (_autoMode) _startAutoDetection();
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('앞면 촬영 완료! 뒷면을 촬영하세요'),
+                backgroundColor: Colors.blue,
+                duration: Duration(seconds: 2),
+              ),
+            );
+          }
+        } else {
+          // 뒷면 촬영 완료 → 합치기
+          setState(() => _isCapturing = true);
+          try {
+            final combined = await DocumentScannerService.instance
+                .combineImagesVertically(_idCardFrontPath!, xFile.path);
+            if (combined != null && mounted) {
+              setState(() {
+                _idCardFrontPath = null;
+                _isCapturing = false;
+              });
+              _navigateToCrop(combined);
+            }
+          } catch (e) {
+            debugPrint('ID카드 합치기 실패: $e');
+            if (mounted) {
+              setState(() => _isCapturing = false);
+              _navigateToCrop(xFile.path);
+            }
+          }
+        }
+      } else if (_batchMode) {
         setState(() {
           _batchImages.add(xFile.path);
           _isCapturing = false;
-          _stableFrameCount = 0;
-          _autoCountdown = 0;
-          _noDetectionCount = 0;
         });
+        _resetDetectionState();
 
         if (_autoMode && mounted) {
           setState(() => _showCapturedFeedback = true);
           await Future.delayed(const Duration(milliseconds: 1200));
           if (mounted) {
-            setState(() {
-              _showCapturedFeedback = false;
-              _detectedCorners = null;
-              _smoothedCorners = null;
-              _qualityInfo = null;
-            });
+            setState(() => _showCapturedFeedback = false);
             _startAutoDetection();
           }
         }
@@ -536,6 +581,18 @@ class _ScannerPageState extends State<ScannerPage> {
     }
   }
 
+  /// 감지 상태 초기화 (촬영 후, CropPage 복귀 시)
+  void _resetDetectionState() {
+    _cornerBuffer.clear();
+    _smoothedCorners = null;
+    _qualityInfo = null;
+    _stableFrameCount = 0;
+    _autoCountdown = 0;
+    _noDetectionCount = 0;
+    _countdownTimer?.cancel();
+    _countdownTimer = null;
+  }
+
   void _navigateToCrop(String imagePath) {
     _stopAutoDetection();
     Navigator.of(context).push(
@@ -543,7 +600,10 @@ class _ScannerPageState extends State<ScannerPage> {
         builder: (_) => CropPage(imagePath: imagePath),
       ),
     ).then((_) {
-      if (mounted && _autoMode && _isCameraAvailable) _startAutoDetection();
+      if (mounted) {
+        _resetDetectionState();
+        if (_autoMode && _isCameraAvailable) _startAutoDetection();
+      }
     });
   }
 
@@ -563,12 +623,16 @@ class _ScannerPageState extends State<ScannerPage> {
 
   @override
   Widget build(BuildContext context) {
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+
     return Scaffold(
       backgroundColor: Colors.black,
+      extendBodyBehindAppBar: true,
       appBar: AppBar(
-        backgroundColor: Colors.black,
+        backgroundColor: Colors.transparent,
+        elevation: 0,
         foregroundColor: Colors.white,
-        title: const Text('문서 스캔'),
+        title: const Text('문서 스캔', style: TextStyle(shadows: [Shadow(blurRadius: 4, color: Colors.black)])),
         actions: [
           IconButton(
             icon: Icon(
@@ -583,7 +647,7 @@ class _ScannerPageState extends State<ScannerPage> {
                   _startAutoDetection();
                 } else {
                   _stopAutoDetection();
-                  _detectedCorners = null;
+    
                   _smoothedCorners = null;
                   _qualityInfo = null;
                   _stableFrameCount = 0;
@@ -609,11 +673,33 @@ class _ScannerPageState extends State<ScannerPage> {
             ),
           IconButton(
             icon: Icon(
+              _idCardMode ? Icons.badge : Icons.badge_outlined,
+              color: _idCardMode ? Colors.cyan : Colors.white,
+            ),
+            tooltip: 'ID카드 스캔',
+            onPressed: () {
+              setState(() {
+                _idCardMode = !_idCardMode;
+                _idCardFrontPath = null;
+                if (_idCardMode) _batchMode = false;
+              });
+            },
+          ),
+          IconButton(
+            icon: Icon(
               _batchMode ? Icons.burst_mode : Icons.burst_mode_outlined,
               color: _batchMode ? Colors.amber : Colors.white,
             ),
             tooltip: '연속 촬영 모드',
-            onPressed: () => setState(() => _batchMode = !_batchMode),
+            onPressed: () {
+              setState(() {
+                _batchMode = !_batchMode;
+                if (_batchMode) {
+                  _idCardMode = false;
+                  _idCardFrontPath = null;
+                }
+              });
+            },
           ),
           if (_batchMode && _batchImages.isNotEmpty)
             TextButton.icon(
@@ -626,25 +712,96 @@ class _ScannerPageState extends State<ScannerPage> {
             ),
         ],
       ),
-      body: Column(
-        children: [
-          Expanded(
-            child: _isCameraAvailable && _isCameraInitialized
-                ? _buildCameraPreview()
-                : _buildNoCameraView(),
+      body: isLandscape ? _buildLandscapeBody() : _buildPortraitBody(),
+    );
+  }
+
+  Widget _buildPortraitBody() {
+    return Column(
+      children: [
+        Expanded(
+          child: _isCameraAvailable && _isCameraInitialized
+              ? _buildCameraPreview()
+              : _buildNoCameraView(),
+        ),
+        if (_batchMode && _batchImages.isNotEmpty) _buildBatchPreview(),
+        _buildBottomControls(),
+      ],
+    );
+  }
+
+  Widget _buildLandscapeBody() {
+    return Row(
+      children: [
+        Expanded(
+          child: _isCameraAvailable && _isCameraInitialized
+              ? _buildCameraPreview()
+              : _buildNoCameraView(),
+        ),
+        SafeArea(
+          child: Container(
+            width: 100,
+            color: Colors.black,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (_batchMode && _batchImages.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    child: Text(
+                      '${_batchImages.length}장',
+                      style: const TextStyle(color: Colors.amber, fontSize: 14, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                _buildControlButton(icon: Icons.photo_library, label: '파일', onTap: _pickFromFile),
+                const SizedBox(height: 24),
+                if (_isCameraAvailable && _isCameraInitialized)
+                  GestureDetector(
+                    onTap: _isCapturing ? null : _captureImage,
+                    child: Container(
+                      width: 64, height: 64,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: _isCapturing ? Colors.grey : Colors.white,
+                        border: Border.all(color: Colors.white30, width: 3),
+                      ),
+                      child: _isCapturing
+                          ? const Padding(padding: EdgeInsets.all(16), child: CircularProgressIndicator(strokeWidth: 3, color: Colors.black54))
+                          : const Icon(Icons.camera, size: 30, color: Colors.black),
+                    ),
+                  ),
+                const SizedBox(height: 24),
+                _buildControlButton(icon: Icons.image, label: '갤러리', onTap: _pickFromGallery),
+                if (_batchMode && _batchImages.isNotEmpty) ...[
+                  const SizedBox(height: 24),
+                  GestureDetector(
+                    onTap: _finishBatch,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.green,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Text('완료', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                ],
+              ],
+            ),
           ),
-          if (_batchMode && _batchImages.isNotEmpty) _buildBatchPreview(),
-          _buildBottomControls(),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
   Widget _buildCameraPreview() {
     final previewSize = _cameraController!.value.previewSize!;
-    // 카메라 previewSize는 landscape 기준 (width > height)
-    // 세로 모드에서는 뒤집어야 함
-    final cameraAspect = previewSize.height / previewSize.width;
+    final orientation = MediaQuery.of(context).orientation;
+    // 카메라 previewSize는 landscape 기준
+    // 세로 모드에서는 뒤집어서 세로 비율로, 가로 모드에서는 그대로
+    final cameraAspect = orientation == Orientation.portrait
+        ? previewSize.height / previewSize.width
+        : previewSize.width / previewSize.height;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -652,13 +809,14 @@ class _ScannerPageState extends State<ScannerPage> {
         final widgetHeight = constraints.maxHeight;
         final widgetAspect = widgetWidth / widgetHeight;
 
+        // Cover 방식: 화면을 꽉 채우고 넘치는 부분 잘라냄 (카메라 앱처럼)
         double renderWidth, renderHeight;
         if (widgetAspect > cameraAspect) {
-          // 위젯이 더 넓음 → 가로 기준 채움
+          // 위젯이 더 넓음 → 가로 기준 채움, 세로 넘침
           renderWidth = widgetWidth;
           renderHeight = widgetWidth / cameraAspect;
         } else {
-          // 위젯이 더 좁음 → 세로 기준 채움
+          // 위젯이 더 좁음 → 세로 기준 채움, 가로 넘침
           renderHeight = widgetHeight;
           renderWidth = widgetHeight * cameraAspect;
         }
@@ -666,10 +824,12 @@ class _ScannerPageState extends State<ScannerPage> {
         final dx = (widgetWidth - renderWidth) / 2;
         final dy = (widgetHeight - renderHeight) / 2;
 
-        return ClipRect(
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
+        return GestureDetector(
+          onTap: _tapToCapture && !_isCapturing ? _captureImage : null,
+          child: ClipRect(
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
               Positioned(
                 left: dx,
                 top: dy,
@@ -678,16 +838,17 @@ class _ScannerPageState extends State<ScannerPage> {
                 child: CameraPreview(_cameraController!),
               ),
 
-              if (_autoMode && _detectedCorners != null)
+              // 문서 감지 오버레이 (카메라 프리뷰와 동일 영역에 배치)
+              if (_autoMode && _smoothedCorners != null && _smoothedCorners!.length == 4)
                 Positioned(
                   left: dx,
                   top: dy,
                   width: renderWidth,
                   height: renderHeight,
                   child: CustomPaint(
-                    painter: _DetectedDocumentPainter(
-                      corners: _detectedCorners!,
-                      quality: _qualityInfo,
+                    painter: _DetectionOverlayPainter(
+                      corners: _smoothedCorners!,
+                      isGood: _qualityInfo?['isGood'] == true,
                     ),
                   ),
                 ),
@@ -697,10 +858,35 @@ class _ScannerPageState extends State<ScannerPage> {
                   child: CustomPaint(painter: _ScanGuideOverlayPainter()),
                 ),
 
+              // 자동 모드 상태 표시
               if (_autoMode && _qualityInfo != null)
                 Positioned(
                   top: 20, left: 20, right: 20,
-                  child: _buildQualityIndicator(),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.5),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          _qualityInfo!['isGood'] == true ? Icons.check_circle : Icons.search,
+                          color: _qualityInfo!['isGood'] == true ? Colors.green : Colors.white70,
+                          size: 18,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          _qualityInfo!['isGood'] == true ? '문서 감지됨' : '문서를 찾고 있습니다...',
+                          style: TextStyle(
+                            color: _qualityInfo!['isGood'] == true ? Colors.green : Colors.white70,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
 
               if (_autoCountdown > 0)
@@ -742,88 +928,46 @@ class _ScannerPageState extends State<ScannerPage> {
                       children: [
                         const Icon(Icons.check, color: Colors.white, size: 64),
                         const SizedBox(height: 4),
-                        Text('${_batchImages.length}장 촬영',
+                        Text(
+                          _idCardMode ? '앞면 촬영 완료' : '${_batchImages.length}장 촬영',
                           style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
                         ),
                       ],
                     ),
                   ),
                 ),
+
+              // ID카드 모드 안내
+              if (_idCardMode)
+                Positioned(
+                  bottom: 10, left: 20, right: 20,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: Colors.cyan.withValues(alpha: 0.85),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.badge, color: Colors.white, size: 20),
+                        const SizedBox(width: 8),
+                        Text(
+                          _idCardFrontPath == null ? 'ID카드 앞면을 촬영하세요' : 'ID카드 뒷면을 촬영하세요',
+                          style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
             ],
+            ),
           ),
         );
       },
     );
   }
 
-  Widget _buildQualityIndicator() {
-    final quality = _qualityInfo!;
-    final score = quality['score'] as double;
-    final isGood = quality['isGood'] as bool;
-    final issues = quality['issues'] as List<String>;
 
-    Color indicatorColor;
-    IconData indicatorIcon;
-    String statusText;
-
-    if (isGood) {
-      indicatorColor = Colors.green;
-      indicatorIcon = Icons.check_circle;
-      statusText = '촬영 준비 완료';
-    } else if (score >= 50) {
-      indicatorColor = Colors.orange;
-      indicatorIcon = Icons.warning;
-      statusText = '품질 개선 필요';
-    } else {
-      indicatorColor = Colors.red;
-      indicatorIcon = Icons.error;
-      statusText = '문서를 찾을 수 없음';
-    }
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.7),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              Icon(indicatorIcon, color: indicatorColor, size: 24),
-              const SizedBox(width: 8),
-              Text(statusText, style: TextStyle(color: indicatorColor, fontSize: 16, fontWeight: FontWeight.bold)),
-              const Spacer(),
-              Text('${score.toInt()}%', style: TextStyle(color: indicatorColor, fontSize: 18, fontWeight: FontWeight.bold)),
-            ],
-          ),
-          if (issues.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            ...issues.map((issue) => Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Row(children: [
-                const Icon(Icons.info_outline, color: Colors.white70, size: 16),
-                const SizedBox(width: 6),
-                Text(issue, style: const TextStyle(color: Colors.white70, fontSize: 13)),
-              ]),
-            )),
-          ],
-          if (_documentSize != null && _documentSize!.detectedSize != PaperSize.unknown) ...[
-            const SizedBox(height: 8),
-            const Divider(color: Colors.white30, height: 1),
-            const SizedBox(height: 8),
-            Row(children: [
-              const Icon(Icons.straighten, color: Colors.white70, size: 16),
-              const SizedBox(width: 6),
-              Text(_documentSize!.toString(), style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500)),
-            ]),
-          ],
-        ],
-      ),
-    );
-  }
 
   Widget _buildNoCameraView() {
     return Center(
@@ -989,52 +1133,64 @@ class _ScanGuideOverlayPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
-class _DetectedDocumentPainter extends CustomPainter {
+/// 문서 감지 결과를 카메라 프리뷰 위에 그리는 페인터
+/// corners는 정규화 좌표 (0~1), 카메라 프리뷰 영역과 동일 크기로 배치
+class _DetectionOverlayPainter extends CustomPainter {
   final List<Offset> corners;
-  final Map<String, dynamic>? quality;
+  final bool isGood;
 
-  _DetectedDocumentPainter({required this.corners, this.quality});
+  _DetectionOverlayPainter({required this.corners, required this.isGood});
 
   @override
   void paint(Canvas canvas, Size size) {
     if (corners.length != 4) return;
 
-    Color lineColor;
-    if (quality != null && quality!['isGood'] == true) {
-      lineColor = Colors.green;
-    } else if (quality != null && quality!['score'] >= 50) {
-      lineColor = Colors.orange;
-    } else {
-      lineColor = Colors.red;
-    }
+    final pts = corners
+        .map((c) => Offset(c.dx * size.width, c.dy * size.height))
+        .toList();
 
-    final points = corners.map((c) => Offset(c.dx * size.width, c.dy * size.height)).toList();
-
-    final docPath = Path()
-      ..moveTo(points[0].dx, points[0].dy)
-      ..lineTo(points[1].dx, points[1].dy)
-      ..lineTo(points[2].dx, points[2].dy)
-      ..lineTo(points[3].dx, points[3].dy)
+    final path = Path()
+      ..moveTo(pts[0].dx, pts[0].dy)
+      ..lineTo(pts[1].dx, pts[1].dy)
+      ..lineTo(pts[2].dx, pts[2].dy)
+      ..lineTo(pts[3].dx, pts[3].dy)
       ..close();
 
-    final maskPaint = Paint()
-      ..color = Colors.black.withValues(alpha: 0.5)
+    // 반투명 채우기
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = (isGood ? Colors.green : Colors.orange).withValues(alpha: 0.15),
+    );
+
+    // 경계선
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = isGood ? Colors.green : Colors.orange
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5,
+    );
+
+    // 꼭짓점 원
+    final dotPaint = Paint()
+      ..color = isGood ? Colors.green : Colors.orange
       ..style = PaintingStyle.fill;
-    final fullPath = Path()..addRect(Rect.fromLTWH(0, 0, size.width, size.height));
-    final maskPath = Path.combine(PathOperation.difference, fullPath, docPath);
-    canvas.drawPath(maskPath, maskPaint);
-
-    canvas.drawPath(docPath, Paint()..color = lineColor..style = PaintingStyle.stroke..strokeWidth = 4.0);
-
-    final handlePaint = Paint()..color = lineColor..style = PaintingStyle.fill;
-    for (final point in points) {
-      canvas.drawCircle(point, 12, Paint()..color = Colors.white..style = PaintingStyle.fill);
-      canvas.drawCircle(point, 8, handlePaint);
+    for (final pt in pts) {
+      canvas.drawCircle(pt, 6, dotPaint);
+      canvas.drawCircle(
+        pt,
+        6,
+        Paint()
+          ..color = Colors.white
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2,
+      );
     }
   }
 
   @override
-  bool shouldRepaint(_DetectedDocumentPainter oldDelegate) {
-    return corners != oldDelegate.corners || quality != oldDelegate.quality;
+  bool shouldRepaint(covariant _DetectionOverlayPainter oldDelegate) {
+    return corners != oldDelegate.corners || isGood != oldDelegate.isGood;
   }
 }

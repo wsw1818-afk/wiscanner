@@ -18,7 +18,7 @@ class _SettingsPageState extends State<SettingsPage> {
   // 설정값
   String _saveFormat = 'png';
   bool _autoScan = true;
-  int _imageQuality = 90;
+  bool _tapToCapture = false;
   String _storageInfo = '';
   bool _cameraGranted = false;
   bool _micGranted = false;
@@ -61,7 +61,7 @@ class _SettingsPageState extends State<SettingsPage> {
       setState(() {
         _saveFormat = _prefs.getString('saveFormat') ?? 'png';
         _autoScan = _prefs.getBool('autoScan') ?? true;
-        _imageQuality = _prefs.getInt('imageQuality') ?? 90;
+        _tapToCapture = _prefs.getBool('tapToCapture') ?? false;
         _cameraGranted = cameraStatus.isGranted;
         _micGranted = micStatus.isGranted;
         _storageInfo = storageInfo;
@@ -102,6 +102,16 @@ class _SettingsPageState extends State<SettingsPage> {
             },
             secondary: const Icon(Icons.auto_awesome),
           ),
+          SwitchListTile(
+            title: const Text('터치 촬영'),
+            subtitle: const Text('화면 아무 곳이나 터치하면 즉시 촬영'),
+            value: _tapToCapture,
+            onChanged: (v) {
+              setState(() => _tapToCapture = v);
+              _prefs.setBool('tapToCapture', v);
+            },
+            secondary: const Icon(Icons.touch_app),
+          ),
 
           // ── 저장 설정 ──
           _buildSectionHeader('저장 설정'),
@@ -112,24 +122,11 @@ class _SettingsPageState extends State<SettingsPage> {
             trailing: const Icon(Icons.chevron_right),
             onTap: () => _showFormatPicker(),
           ),
-          ListTile(
-            leading: const Icon(Icons.high_quality),
-            title: const Text('이미지 품질'),
-            subtitle: Text('$_imageQuality%'),
-            trailing: SizedBox(
-              width: 160,
-              child: Slider(
-                value: _imageQuality.toDouble(),
-                min: 50,
-                max: 100,
-                divisions: 10,
-                label: '$_imageQuality%',
-                onChanged: (v) {
-                  setState(() => _imageQuality = v.round());
-                  _prefs.setInt('imageQuality', v.round());
-                },
-              ),
-            ),
+          const ListTile(
+            leading: Icon(Icons.high_quality, color: Colors.green),
+            title: Text('이미지 품질'),
+            subtitle: Text('항상 최고 품질 (100%)'),
+            trailing: Icon(Icons.check_circle, color: Colors.green),
           ),
           ListTile(
             leading: const Icon(Icons.folder),

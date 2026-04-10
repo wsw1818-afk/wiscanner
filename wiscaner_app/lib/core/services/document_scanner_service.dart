@@ -7,6 +7,7 @@ import 'package:dartcv4/dartcv.dart' as cv;
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'doc_aligner_service.dart';
 import 'dual_page_detector_service.dart';
 
@@ -148,17 +149,20 @@ class DocumentScannerService {
       if (corners != null && corners.length == 4) {
         // corners는 픽셀 좌표 → 정규화 좌표로 변환
         final src = cv.imread(imagePath);
-        final w = src.cols.toDouble();
-        final h = src.rows.toDouble();
-        src.dispose();
-        final normalized = corners
-            .map((p) => Offset(
-                  (p.dx / w).clamp(0.0, 1.0),
-                  (p.dy / h).clamp(0.0, 1.0),
-                ))
-            .toList();
-        debugPrint('[감지] DocAligner 성공');
-        return normalized;
+        try {
+          final w = src.cols.toDouble();
+          final h = src.rows.toDouble();
+          final normalized = corners
+              .map((p) => Offset(
+                    (p.dx / w).clamp(0.0, 1.0),
+                    (p.dy / h).clamp(0.0, 1.0),
+                  ))
+              .toList();
+          debugPrint('[감지] DocAligner 성공');
+          return normalized;
+        } finally {
+          src.dispose();
+        }
       }
     } catch (e) {
       debugPrint('[DocAligner] 오류: $e');
@@ -234,22 +238,22 @@ class DocumentScannerService {
       {
         final result = _cornersFromCanny(gray, ww, wh, scale);
         if (result != null) {
-          debugPrint('[감지] 전략1(Canny) 성공: ${result.map((p) => '(${(p.dx/w).toStringAsFixed(2)},${(p.dy/h).toStringAsFixed(2)})').join(' ')}');
+          // 전략1(Canny) 성공
           gray.dispose();
           return result;
         }
-        debugPrint('[감지] 전략1(Canny) 실패 → 전략2 시도');
+        // 전략1 실패 → 전략2 시도
       }
 
       // ── 전략 2: Otsu blob (책 페이지가 배경보다 뚜렷이 밝을 때) ──────────
       {
         final result = _cornersFromLargestBright(gray, ww, wh, scale);
         if (result != null) {
-          debugPrint('[감지] 전략2(Otsu-blob) 성공: ${result.map((p) => '(${(p.dx/w).toStringAsFixed(2)},${(p.dy/h).toStringAsFixed(2)})').join(' ')}');
+          // 전략2(Otsu-blob) 성공
           gray.dispose();
           return result;
         }
-        debugPrint('[감지] 전략2(Otsu-blob) 실패 → 전략3 시도');
+        // 전략2 실패 → 전략3 시도
       }
 
       // 3) Black Top-Hat + Canny 엣지 (전략 3용 엣지)
@@ -270,12 +274,12 @@ class DocumentScannerService {
       // ── 전략 3: HoughLinesP → 직선 교차점 ──────────────────────────────
       final result = _cornersFromHoughLines(edges, gray, ww, wh, scale);
       if (result != null) {
-        debugPrint('[감지] 전략3(Hough) 성공: ${result.map((p) => '(${(p.dx/w).toStringAsFixed(2)},${(p.dy/h).toStringAsFixed(2)})').join(' ')}');
+        // 전략3(Hough) 성공
         edges.dispose();
         gray.dispose();
         return result;
       }
-      debugPrint('[감지] 전략3(Hough) 실패 → null 반환');
+      // 전략3 실패
       edges.dispose();
       gray.dispose();
       return null;
@@ -329,8 +333,8 @@ class DocumentScannerService {
           for (int j = 0; j < 4; j++) {
             pts.add(Offset(approx[j].x.toDouble(), approx[j].y.toDouble()));
           }
-          if (_isConvexQuad(pts) && _isRectangularEnough(pts, maxAngleRange: 50.0)) {
-            quad = _orderCorners(pts);
+          if (isConvexQuad(pts) && _isRectangularEnough(pts, maxAngleRange: 50.0)) {
+            quad = orderCorners(pts);
             break;
           }
         }
@@ -362,7 +366,7 @@ class DocumentScannerService {
       final brightnessBonus = (meanVal / 150.0).clamp(0.5, 1.5);
       final score = ratio * brightnessBonus;
 
-      debugPrint('[Canny] contour$i 면적비=${ratio.toStringAsFixed(2)} brightness=${meanVal.toStringAsFixed(0)} score=${score.toStringAsFixed(3)}');
+      // contour$i scored
 
       if (score > bestScore) {
         bestScore = score;
@@ -372,7 +376,7 @@ class DocumentScannerService {
     contours.dispose();
 
     if (bestQuad == null) return null;
-    debugPrint('[Canny] 최적 score=${bestScore.toStringAsFixed(3)}');
+    // Canny 최적 score found
 
     if (scale < 1.0) {
       bestQuad = bestQuad.map((p) => Offset(p.dx / scale, p.dy / scale)).toList();
@@ -389,7 +393,7 @@ class DocumentScannerService {
     final (otsuThresh, binary) = cv.threshold(blurred, 0, 255,
         cv.THRESH_BINARY | cv.THRESH_OTSU);
     blurred.dispose();
-    debugPrint('[Otsu] 자동 임계값=$otsuThresh ww=${ww.toInt()} wh=${wh.toInt()}');
+    // Otsu 자동 임계값 결정
 
     // 모폴로지: 책 내부 텍스트/그림으로 생긴 구멍을 메워 단일 blob으로 만듦
     final kSize = ((ww * 0.04).toInt() | 1).clamp(11, 41);
@@ -409,7 +413,7 @@ class DocumentScannerService {
     if (contours.isEmpty) return null;
 
     final workArea = ww * wh;
-    debugPrint('[Otsu] blob 개수=${contours.length}개');
+    // Otsu blob 검사 시작
 
     // 크기 범위(15%~65%)에 드는 모든 후보 blob에서 가장 좋은 사각형 찾기
     // 상한을 0.65로 낮춤: 책+배경이 합쳐진 대형 blob(0.70+) 제외
@@ -431,8 +435,8 @@ class DocumentScannerService {
           for (int j = 0; j < 4; j++) {
             pts.add(Offset(approx[j].x.toDouble(), approx[j].y.toDouble()));
           }
-          if (_isConvexQuad(pts) && _isRectangularEnough(pts, maxAngleRange: 50.0)) {
-            quad = _orderCorners(pts);
+          if (isConvexQuad(pts) && _isRectangularEnough(pts, maxAngleRange: 50.0)) {
+            quad = orderCorners(pts);
             break;
           }
         }
@@ -443,7 +447,7 @@ class DocumentScannerService {
       final yMin = quad.map((p) => p.dy).reduce(math.min);
       final yMax = quad.map((p) => p.dy).reduce(math.max);
       if (yMin / wh < 0.05) {
-        debugPrint('[Otsu] blob$i 거부: yMin=${(yMin/wh).toStringAsFixed(2)} < 0.05 (배경 포함)');
+        // blob$i 거부: 배경 포함
         continue;
       }
       // 기본 유효성: 상단 40% 이내, 하단 60% 이상
@@ -453,7 +457,7 @@ class DocumentScannerService {
       final qArea = _quadArea(quad);
       final rectScore = qArea / workArea; // 클수록 책이 화면을 많이 차지
       final score = rectScore;
-      debugPrint('[Otsu] blob$i 면적비=${ratio.toStringAsFixed(2)} yMin=${(yMin/wh).toStringAsFixed(2)} score=${score.toStringAsFixed(3)}');
+      // blob$i scored
 
       if (score > bestScore) {
         bestScore = score;
@@ -463,11 +467,11 @@ class DocumentScannerService {
     contours.dispose();
 
     if (bestQuad == null) {
-      debugPrint('[Otsu] 유효한 사각형 blob 없음');
+      // Otsu: 유효한 사각형 없음
       return null;
     }
 
-    debugPrint('[Otsu] 최적 blob score=${bestScore.toStringAsFixed(3)}');
+    // Otsu 최적 blob found
 
     if (scale < 1.0) {
       bestQuad = bestQuad.map((p) => Offset(p.dx / scale, p.dy / scale)).toList();
@@ -536,10 +540,10 @@ class DocumentScannerService {
         : botLine;
 
     if (topMidY > wh * 0.30) {
-      debugPrint('[Hough] 상단선 없음(y_mid=${topMidY.toInt()} > ${(wh*0.30).toInt()}) → 화면 상단(y=0) 사용');
+      // Hough: 상단선 없음 → 화면 상단 사용
     }
     if (botMidY < wh * 0.50) {
-      debugPrint('[Hough] 하단선 없음(y_mid=${botMidY.toInt()} < ${(wh*0.50).toInt()}) → 화면 하단(y=$wh) 사용');
+      // Hough: 하단선 없음 → 화면 하단 사용
     }
 
     // 직선 교차점 계산: ax + by + c = 0 연립방정식
@@ -622,8 +626,6 @@ class DocumentScannerService {
   Future<List<Offset>> _detectCornersFromYPlaneOpenCV(
     Uint8List yBytes, int srcWidth, int srcHeight, int bytesPerRow,
   ) async {
-    debugPrint('[감지] OpenCV 시작: src=${srcWidth}x$srcHeight');
-
     // Y plane → Mat (bytesPerRow가 width와 다를 수 있으므로 처리)
     final yList = <int>[];
     for (int y = 0; y < srcHeight; y++) {
@@ -660,11 +662,9 @@ class DocumentScannerService {
                   (p.dy / outHeight).clamp(0.0, 1.0),
                 ))
             .toList();
-        debugPrint('[감지] OpenCV 성공: ${result.map((c) => "(${c.dx.toStringAsFixed(2)},${c.dy.toStringAsFixed(2)})").join(",")}');
         return result;
       }
 
-      debugPrint('[감지] OpenCV: 문서 감지 실패 → 기본값');
       return _defaultCorners();
     } finally {
       yMat.dispose();
@@ -672,7 +672,7 @@ class DocumentScannerService {
   }
 
   /// 4개 코너를 좌상→우상→우하→좌하 순서로 정렬
-  List<Offset> _orderCorners(List<Offset> pts) {
+  static List<Offset> orderCorners(List<Offset> pts) {
     // 합(x+y)이 최소 = 좌상, 최대 = 우하
     // 차(y-x)가 최소 = 우상, 최대 = 좌하
     final sorted = List<Offset>.from(pts);
@@ -720,7 +720,7 @@ class DocumentScannerService {
   /// 유효한 사각형인지 확인
   /// 1) 꼭짓점 중복 없어야 함 (삼각형 오감지 제거)
   /// 2) 볼록이거나 오목 1개까지 허용 (책 접힘 대응)
-  bool _isConvexQuad(List<Offset> pts) {
+  static bool isConvexQuad(List<Offset> pts) {
     if (pts.length != 4) return false;
 
     // 꼭짓점 중복 검사: 두 점이 5px 이내로 가까우면 삼각형 → 제거
@@ -787,7 +787,7 @@ class DocumentScannerService {
           final imgArea = workImg.width * workImg.height;
           if (area < imgArea * 0.08) continue;
           if (area > imgArea * 0.85) continue;
-          if (!_isConvexQuad(corners)) continue;
+          if (!isConvexQuad(corners)) continue;
 
           return corners
               .map((p) => Offset(
@@ -834,7 +834,7 @@ class DocumentScannerService {
           final area = _quadArea(corners);
           final areaRatio = area / (workW * workH);
           if (areaRatio < 0.08 || areaRatio > 0.85) continue;
-          if (!_isConvexQuad(corners)) continue;
+          if (!isConvexQuad(corners)) continue;
 
           return corners
               .map((p) => Offset(
@@ -1262,25 +1262,28 @@ class DocumentScannerService {
       ]);
 
       final M = cv.getPerspectiveTransform2f(srcPoints, dstPoints);
-      final warped = cv.warpPerspective(
-        src, M, (outW, outH),
-        flags: cv.INTER_CUBIC,
-        borderMode: cv.BORDER_CONSTANT,
-        borderValue: cv.Scalar(255, 255, 255, 255),
-      );
-
-      // 저장
-      final cacheDir = await scanCacheDirectory;
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final outPath = '$cacheDir${Platform.pathSeparator}cropped_$timestamp.png';
-      cv.imwrite(outPath, warped);
-
-      M.dispose();
-      warped.dispose();
-      srcPoints.dispose();
-      dstPoints.dispose();
-
-      return outPath;
+      try {
+        final warped = cv.warpPerspective(
+          src, M, (outW, outH),
+          flags: cv.INTER_CUBIC,
+          borderMode: cv.BORDER_CONSTANT,
+          borderValue: cv.Scalar(255, 255, 255, 255),
+        );
+        try {
+          // 저장
+          final cacheDir = await scanCacheDirectory;
+          final timestamp = DateTime.now().millisecondsSinceEpoch;
+          final outPath = '$cacheDir${Platform.pathSeparator}cropped_$timestamp.png';
+          cv.imwrite(outPath, warped);
+          return outPath;
+        } finally {
+          warped.dispose();
+        }
+      } finally {
+        M.dispose();
+        srcPoints.dispose();
+        dstPoints.dispose();
+      }
     } finally {
       src.dispose();
     }
@@ -1420,14 +1423,28 @@ class DocumentScannerService {
       switch (filter) {
         case ScanFilter.document:
           final gray = src.channels > 1 ? cv.cvtColor(src, cv.COLOR_BGR2GRAY) : src.clone();
-          final blockSize = math.max(11, (gray.cols ~/ 30) | 1);
+          // 배경 노이즈(뒤에 비치는 글씨) 제거: 큰 블러로 배경 추정 후 정규화
+          final bgBlur = cv.gaussianBlur(gray, (51, 51), 0);
+          // 정규화: gray / bgBlur * 200 → 배경이 균일해짐
+          final normalized = cv.Mat.zeros(gray.rows, gray.cols, cv.MatType.CV_8UC1);
+          for (int r = 0; r < gray.rows; r++) {
+            for (int c = 0; c < gray.cols; c++) {
+              final gv = gray.at<int>(r, c);
+              final bv = math.max(bgBlur.at<int>(r, c), 1);
+              normalized.set<int>(r, c, (gv * 200 ~/ bv).clamp(0, 255));
+            }
+          }
+          bgBlur.dispose();
+          gray.dispose();
+          // 이진화: C 상수를 높여 배경은 확실히 흰색으로
+          final blockSize = math.max(11, (normalized.cols ~/ 30) | 1);
           result = cv.adaptiveThreshold(
-            gray, 255,
+            normalized, 255,
             cv.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv.THRESH_BINARY,
-            blockSize, 7.0,
+            blockSize, 12.0,
           );
-          gray.dispose();
+          normalized.dispose();
 
         case ScanFilter.grayscale:
           result = src.channels > 1 ? cv.cvtColor(src, cv.COLOR_BGR2GRAY) : src.clone();
@@ -1436,8 +1453,9 @@ class DocumentScannerService {
           result = src.convertTo(cv.MatType.CV_8UC3, alpha: 1.3, beta: 40);
 
         case ScanFilter.highContrast:
+          // 대비 강화: 밝기를 약간 올리고 대비만 조절 (equalizeHist는 너무 진해짐)
           final gray = src.channels > 1 ? cv.cvtColor(src, cv.COLOR_BGR2GRAY) : src.clone();
-          result = cv.equalizeHist(gray);
+          result = gray.convertTo(cv.MatType.CV_8UC1, alpha: 1.4, beta: 10);
           gray.dispose();
 
         default:
@@ -1466,7 +1484,8 @@ class DocumentScannerService {
     switch (filter) {
       case ScanFilter.document:
         result = img.grayscale(src);
-        result = img.adjustColor(result, contrast: 1.5);
+        // 배경 불균일 제거: 밝기를 정규화해서 비치는 글씨 억제
+        result = _normalizeBackground(result);
         result = _adaptiveThresholdDart(result);
 
       case ScanFilter.grayscale:
@@ -1477,7 +1496,7 @@ class DocumentScannerService {
 
       case ScanFilter.highContrast:
         result = img.grayscale(src);
-        result = img.adjustColor(result, contrast: 2.0);
+        result = img.adjustColor(result, contrast: 1.4, brightness: 1.05);
 
       default:
         result = src;
@@ -1491,6 +1510,35 @@ class DocumentScannerService {
   }
 
   /// Phase 1: 적응형 blockSize 이진화 (Dart fallback)
+  /// 배경 불균일 정규화: 큰 블록 평균으로 나눠서 비치는 글씨·조명 차이 제거
+  img.Image _normalizeBackground(img.Image src) {
+    final w = src.width;
+    final h = src.height;
+    final result = img.Image(width: w, height: h);
+    final blockSize = math.max(51, (w ~/ 10) | 1); // 큰 블록으로 배경 추정
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        int sum = 0, count = 0;
+        final x0 = math.max(0, x - blockSize ~/ 2);
+        final y0 = math.max(0, y - blockSize ~/ 2);
+        final x1 = math.min(w - 1, x + blockSize ~/ 2);
+        final y1 = math.min(h - 1, y + blockSize ~/ 2);
+        for (int by = y0; by <= y1; by += 4) {
+          for (int bx = x0; bx <= x1; bx += 4) {
+            sum += src.getPixel(bx, by).r.toInt();
+            count++;
+          }
+        }
+        final bg = count > 0 ? sum ~/ count : 200;
+        final pixel = src.getPixel(x, y).r.toInt();
+        // 배경 밝기로 나눠서 정규화 (255에 가깝게)
+        final normalized = (pixel * 255 / math.max(bg, 1)).clamp(0, 255).toInt();
+        result.setPixelRgb(x, y, normalized, normalized, normalized);
+      }
+    }
+    return result;
+  }
+
   img.Image _adaptiveThresholdDart(img.Image src) {
     final w = src.width;
     final h = src.height;
@@ -1596,6 +1644,22 @@ class DocumentScannerService {
     return await scanSaveDirectory;
   }
 
+  /// PDF 저장 전용 디렉토리 (앱 전용 외부 저장소 → Scoped Storage 제한 없음)
+  Future<String> get _pdfDirectory async {
+    if (Platform.isAndroid) {
+      final extDir = await getExternalStorageDirectory();
+      if (extDir != null) {
+        final pdfDir = Directory('${extDir.path}${Platform.pathSeparator}pdfs');
+        if (!await pdfDir.exists()) await pdfDir.create(recursive: true);
+        return pdfDir.path;
+      }
+    }
+    final appDir = await getApplicationDocumentsDirectory();
+    final pdfDir = Directory('${appDir.path}${Platform.pathSeparator}WiScanner${Platform.pathSeparator}pdfs');
+    if (!await pdfDir.exists()) await pdfDir.create(recursive: true);
+    return pdfDir.path;
+  }
+
   Future<String?> saveAsImage({
     required String imagePath,
     required String fileName,
@@ -1610,7 +1674,7 @@ class DocumentScannerService {
       if (format == 'jpg' || format == 'jpeg') {
         final src = img.decodeImage(bytes);
         if (src == null) return null;
-        await File(outPath).writeAsBytes(img.encodeJpg(src, quality: 90));
+        await File(outPath).writeAsBytes(img.encodeJpg(src, quality: 100));
       } else {
         await File(imagePath).copy(outPath);
       }
@@ -1622,36 +1686,319 @@ class DocumentScannerService {
     }
   }
 
-  Future<String?> saveAsPdf({
+  /// PDF 저장. 실패 시 에러 메시지를 throw합니다.
+  Future<String> saveAsPdf({
     required List<String> imagePaths,
     required String title,
   }) async {
-    try {
-      final document = PdfDocument();
-      for (final imagePath in imagePaths) {
-        final bytes = await File(imagePath).readAsBytes();
-        final pdfImage = PdfBitmap(bytes);
-        final page = document.pages.add();
-        final pageW = page.getClientSize().width;
-        final pageH = page.getClientSize().height;
-        final imgScale = math.min(pageW / pdfImage.width, pageH / pdfImage.height);
-        final imgW = pdfImage.width * imgScale;
-        final imgH = pdfImage.height * imgScale;
-        final offsetX = (pageW - imgW) / 2;
-        final offsetY = (pageH - imgH) / 2;
-        page.graphics.drawImage(pdfImage, Rect.fromLTWH(offsetX, offsetY, imgW, imgH));
+    final errors = <String>[];
+    final document = PdfDocument();
+    for (int i = 0; i < imagePaths.length; i++) {
+      final imagePath = imagePaths[i];
+      try {
+        final imageFile = File(imagePath);
+        if (!await imageFile.exists()) {
+          errors.add('페이지${i + 1}: 파일 없음');
+          continue;
+        }
+        final rawBytes = await imageFile.readAsBytes();
+        if (rawBytes.isEmpty) {
+          errors.add('페이지${i + 1}: 빈 파일');
+          continue;
+        }
+
+        // PNG를 JPEG로 변환 (PdfBitmap 호환성 + 검정 배경 제거)
+        final decoded = img.decodeImage(rawBytes);
+        if (decoded == null) {
+          errors.add('페이지${i + 1}: 이미지 디코딩 실패');
+          continue;
+        }
+        // 투명 영역을 흰색으로 채운 새 이미지 생성
+        final whiteBase = img.Image(width: decoded.width, height: decoded.height);
+        img.fill(whiteBase, color: img.ColorRgba8(255, 255, 255, 255));
+        img.compositeImage(whiteBase, decoded);
+        // 가장자리 검정/어두운 테두리 자동 제거 (trim)
+        final trimmed = img.trim(whiteBase, mode: img.TrimMode.topLeftColor);
+        final jpegBytes = Uint8List.fromList(img.encodeJpg(trimmed, quality: 100));
+
+        final pdfImage = PdfBitmap(jpegBytes);
+        // 이미지 크기에 맞게 페이지 생성 (여백 없음)
+        const dpi = 150.0;
+        final pageW = pdfImage.width * 72.0 / dpi;
+        final pageH = pdfImage.height * 72.0 / dpi;
+        final section = document.sections!.add();
+        section.pageSettings.size = Size(pageW, pageH);
+        section.pageSettings.margins.all = 0;
+        final page = section.pages.add();
+        page.graphics.drawImage(pdfImage, Rect.fromLTWH(0, 0, pageW, pageH));
+      } catch (imgErr) {
+        errors.add('페이지${i + 1}: $imgErr');
+        continue;
       }
-      final saveDir = await _picturesDirectory;
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final sanitized = _sanitizeFileName(title);
-      final outPath = '$saveDir${Platform.pathSeparator}${sanitized}_$timestamp.pdf';
-      final file = File(outPath);
-      await file.writeAsBytes(await document.save());
+    }
+    if (document.pages.count == 0) {
       document.dispose();
-      await _scanMediaFile(outPath);
+      throw Exception('모든 이미지 변환 실패${errors.isNotEmpty ? '\n${errors.join('\n')}' : ''}');
+    }
+    // PDF는 앱 전용 디렉토리에 저장 (공용 Pictures 폴더는 Scoped Storage에서 PDF 쓰기 불가)
+    final saveDir = await _pdfDirectory;
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final sanitized = _sanitizeFileName(title);
+    final outPath = '$saveDir${Platform.pathSeparator}${sanitized}_$timestamp.pdf';
+    final file = File(outPath);
+    final pdfBytes = await document.save();
+    await file.writeAsBytes(pdfBytes);
+    document.dispose();
+    return outPath;
+  }
+
+  // ─── OCR 텍스트 인식 ───
+
+  /// google_mlkit_text_recognition을 사용한 텍스트 인식
+  Future<String?> recognizeText({required String imagePath}) async {
+    // 한국어 먼저 시도, 실패 시 라틴 문자로 재시도
+    for (final script in [TextRecognitionScript.korean, TextRecognitionScript.latin]) {
+      TextRecognizer? recognizer;
+      try {
+        final inputImage = InputImage.fromFilePath(imagePath);
+        recognizer = TextRecognizer(script: script);
+        final result = await recognizer.processImage(inputImage);
+        await recognizer.close();
+        recognizer = null;
+        if (result.text.isNotEmpty) return result.text;
+      } catch (e) {
+        debugPrint('OCR 실패 (script=$script): $e');
+        try { await recognizer?.close(); } catch (_) {}
+        recognizer = null;
+      }
+    }
+    return null;
+  }
+
+  // ─── 워터마크 ───
+
+  /// 텍스트 워터마크를 이미지에 추가
+  Future<String?> addTextWatermark({
+    required String imagePath,
+    required String text,
+    double opacity = 0.4,
+  }) async {
+    try {
+      final bytes = await File(imagePath).readAsBytes();
+      final src = img.decodeImage(bytes);
+      if (src == null) return null;
+
+      final fontSize = (src.width * 0.04).clamp(16.0, 60.0).toInt();
+      final x = src.width - (text.length * fontSize * 0.6).toInt() - 20;
+      final y = src.height - fontSize - 20;
+      final color = img.ColorRgba8(255, 255, 255, (opacity * 255).toInt());
+
+      img.drawString(src, text, font: img.arial48, x: x.clamp(10, src.width - 10), y: y.clamp(10, src.height - 10), color: color);
+
+      final cacheDir = await scanCacheDirectory;
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final outPath = '$cacheDir${Platform.pathSeparator}watermark_$ts.png';
+      await File(outPath).writeAsBytes(img.encodePng(src));
       return outPath;
     } catch (e) {
-      debugPrint('PDF 저장 실패: $e');
+      debugPrint('워터마크 실패: $e');
+      return null;
+    }
+  }
+
+  // ─── 서명 합성 ───
+
+  /// 서명 이미지를 문서에 합성
+  Future<String?> overlaySignature({
+    required String imagePath,
+    required Uint8List signatureBytes,
+    Offset position = const Offset(0.75, 0.85),
+    double scale = 0.25,
+  }) async {
+    try {
+      final docBytes = await File(imagePath).readAsBytes();
+      final doc = img.decodeImage(docBytes);
+      if (doc == null) return null;
+
+      final sig = img.decodePng(signatureBytes);
+      if (sig == null) return null;
+
+      final sigW = (doc.width * scale).toInt();
+      final sigH = (sig.height * sigW / sig.width).toInt();
+      final resizedSig = img.copyResize(sig, width: sigW, height: sigH);
+
+      final dx = (position.dx * doc.width - sigW / 2).toInt().clamp(0, doc.width - sigW);
+      final dy = (position.dy * doc.height - sigH / 2).toInt().clamp(0, doc.height - sigH);
+
+      img.compositeImage(doc, resizedSig, dstX: dx, dstY: dy);
+
+      final cacheDir = await scanCacheDirectory;
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final outPath = '$cacheDir${Platform.pathSeparator}signed_$ts.png';
+      await File(outPath).writeAsBytes(img.encodePng(doc));
+      return outPath;
+    } catch (e) {
+      debugPrint('서명 합성 실패: $e');
+      return null;
+    }
+  }
+
+  // ─── ID카드 합치기 ───
+
+  /// 두 이미지를 세로로 합치기 (ID카드 앞뒤면)
+  Future<String?> combineImagesVertically(String topPath, String bottomPath) async {
+    try {
+      final topBytes = await File(topPath).readAsBytes();
+      final bottomBytes = await File(bottomPath).readAsBytes();
+      final topImg = img.decodeImage(topBytes);
+      final bottomImg = img.decodeImage(bottomBytes);
+      if (topImg == null || bottomImg == null) return null;
+
+      final maxW = math.max(topImg.width, bottomImg.width);
+      final topResized = topImg.width == maxW ? topImg : img.copyResize(topImg, width: maxW);
+      final bottomResized = bottomImg.width == maxW ? bottomImg : img.copyResize(bottomImg, width: maxW);
+
+      final combined = img.Image(width: maxW, height: topResized.height + bottomResized.height);
+      img.compositeImage(combined, topResized, dstX: 0, dstY: 0);
+      img.compositeImage(combined, bottomResized, dstX: 0, dstY: topResized.height);
+
+      final cacheDir = await scanCacheDirectory;
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final outPath = '$cacheDir${Platform.pathSeparator}idcard_$ts.png';
+      await File(outPath).writeAsBytes(img.encodePng(combined));
+      return outPath;
+    } catch (e) {
+      debugPrint('ID카드 합치기 실패: $e');
+      return null;
+    }
+  }
+
+  // ─── PDF 편집 ───
+
+  /// PDF 페이지 수 가져오기
+  Future<int> getPdfPageCount(String pdfPath) async {
+    final bytes = await File(pdfPath).readAsBytes();
+    final doc = PdfDocument(inputBytes: bytes);
+    final count = doc.pages.count;
+    doc.dispose();
+    return count;
+  }
+
+  /// PDF에 이미지 페이지 추가
+  Future<String?> addPageToPdf({
+    required String pdfPath,
+    required String imagePath,
+  }) async {
+    try {
+      final pdfBytes = await File(pdfPath).readAsBytes();
+      final doc = PdfDocument(inputBytes: pdfBytes);
+      final imgBytes = await File(imagePath).readAsBytes();
+      final pdfImage = PdfBitmap(imgBytes);
+      final page = doc.pages.add();
+      final pageW = page.getClientSize().width;
+      final pageH = page.getClientSize().height;
+      final imgScale = math.min(pageW / pdfImage.width, pageH / pdfImage.height);
+      final imgW = pdfImage.width * imgScale;
+      final imgH = pdfImage.height * imgScale;
+      page.graphics.drawImage(pdfImage, Rect.fromLTWH((pageW - imgW) / 2, (pageH - imgH) / 2, imgW, imgH));
+      await File(pdfPath).writeAsBytes(await doc.save());
+      doc.dispose();
+      await _scanMediaFile(pdfPath);
+      return pdfPath;
+    } catch (e) {
+      debugPrint('PDF 페이지 추가 실패: $e');
+      return null;
+    }
+  }
+
+  /// PDF 페이지 삭제
+  Future<String?> removePageFromPdf({
+    required String pdfPath,
+    required int pageIndex,
+  }) async {
+    try {
+      final pdfBytes = await File(pdfPath).readAsBytes();
+      final doc = PdfDocument(inputBytes: pdfBytes);
+      if (pageIndex >= 0 && pageIndex < doc.pages.count) {
+        doc.pages.removeAt(pageIndex);
+      }
+      await File(pdfPath).writeAsBytes(await doc.save());
+      doc.dispose();
+      return pdfPath;
+    } catch (e) {
+      debugPrint('PDF 페이지 삭제 실패: $e');
+      return null;
+    }
+  }
+
+  /// PDF 페이지 순서 변경
+  Future<String?> reorderPdfPages({
+    required String pdfPath,
+    required List<int> newOrder,
+  }) async {
+    try {
+      final srcBytes = await File(pdfPath).readAsBytes();
+      final srcDoc = PdfDocument(inputBytes: srcBytes);
+      final newDoc = PdfDocument();
+
+      for (final idx in newOrder) {
+        if (idx < srcDoc.pages.count) {
+          final template = srcDoc.pages[idx].createTemplate();
+          final newPage = newDoc.pages.add();
+          final sz = newPage.getClientSize();
+          newPage.graphics.drawPdfTemplate(
+            template, Offset.zero,
+            Size(sz.width, sz.height),
+          );
+        }
+      }
+
+      await File(pdfPath).writeAsBytes(await newDoc.save());
+      srcDoc.dispose();
+      newDoc.dispose();
+      return pdfPath;
+    } catch (e) {
+      debugPrint('PDF 순서 변경 실패: $e');
+      return null;
+    }
+  }
+
+  /// 두 PDF 병합
+  Future<String?> mergePdfs({
+    required String pdf1Path,
+    required String pdf2Path,
+    required String outputTitle,
+  }) async {
+    try {
+      final doc1Bytes = await File(pdf1Path).readAsBytes();
+      final doc2Bytes = await File(pdf2Path).readAsBytes();
+      final doc1 = PdfDocument(inputBytes: doc1Bytes);
+      final doc2 = PdfDocument(inputBytes: doc2Bytes);
+      final merged = PdfDocument();
+
+      for (int i = 0; i < doc1.pages.count; i++) {
+        final template = doc1.pages[i].createTemplate();
+        final page = merged.pages.add();
+        final sz = page.getClientSize();
+        page.graphics.drawPdfTemplate(template, Offset.zero, Size(sz.width, sz.height));
+      }
+      for (int i = 0; i < doc2.pages.count; i++) {
+        final template = doc2.pages[i].createTemplate();
+        final page = merged.pages.add();
+        final sz = page.getClientSize();
+        page.graphics.drawPdfTemplate(template, Offset.zero, Size(sz.width, sz.height));
+      }
+
+      final saveDir = await _pdfDirectory;
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final outPath = '$saveDir${Platform.pathSeparator}${_sanitizeFileName(outputTitle)}_$ts.pdf';
+      await File(outPath).writeAsBytes(await merged.save());
+      doc1.dispose();
+      doc2.dispose();
+      merged.dispose();
+      return outPath;
+    } catch (e) {
+      debugPrint('PDF 병합 실패: $e');
       return null;
     }
   }

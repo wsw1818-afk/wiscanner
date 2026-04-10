@@ -14,8 +14,9 @@ dependencies:
   path_provider: ^2.1.0
   path: ^1.8.0
 
-  # PDF 생성
+  # PDF 생성 및 뷰어
   syncfusion_flutter_pdf: ^28.1.0
+  syncfusion_flutter_pdfviewer: ^28.1.0
 
   # 이미지 선택
   image_picker: ^1.1.2
@@ -35,6 +36,10 @@ dependencies:
   # 파일 선택 및 공유
   file_picker: ^6.1.0
   share_plus: ^7.2.0
+
+  # OCR 텍스트 인식
+  google_mlkit_text_recognition: ^0.13.0
+  google_mlkit_commons: ^0.7.0
 
   # 딥러닝 문서 감지
   onnxruntime: ^1.4.1

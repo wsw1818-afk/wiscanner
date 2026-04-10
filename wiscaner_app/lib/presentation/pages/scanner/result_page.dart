@@ -42,6 +42,18 @@ class _ResultPageState extends State<ResultPage> {
     _checkDualPage();
   }
 
+  /// 스캔 모드(ScannerPage)로 복귀 — ResultPage + CropPage를 pop
+  void _returnToScanner() {
+    // ResultPage → CropPage → ScannerPage: 2단계 pop
+    int popCount = 0;
+    Navigator.of(context).popUntil((route) {
+      // ScannerPage에 도달하거나 첫 화면이면 멈춤
+      if (route.isFirst) return true;
+      popCount++;
+      return popCount > 2; // ResultPage(1) + CropPage(2) pop
+    });
+  }
+
   /// 양면 펼침 자동 감지
   Future<void> _checkDualPage() async {
     try {
@@ -92,6 +104,28 @@ class _ResultPageState extends State<ResultPage> {
       _filteredPaths.clear();
     });
   }
+
+  // ─── 이미지 회전 ───
+  Future<void> _rotateImage() async {
+    setState(() => _isProcessing = true);
+    try {
+      final result = await _scanner.rotateImage(_currentImagePath, 90);
+      if (result != null && mounted) {
+        setState(() {
+          _displayPaths[_currentIndex] = result;
+          // 필터 캐시 초기화 (회전된 이미지이므로)
+          _filteredPaths.removeWhere((key, _) =>
+              key.startsWith(_displayPaths[_currentIndex]));
+          _selectedFilter = ScanFilter.original;
+        });
+      }
+    } catch (e) {
+      debugPrint('회전 실패: $e');
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
+    }
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -208,12 +242,12 @@ class _ResultPageState extends State<ResultPage> {
               ),
             ),
 
-          // 필터 선택
-          _buildFilterSelector(),
+          // 필터 + 회전 바
+          _buildFilterAndRotateBar(),
 
           // 액션 버튼들
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
             child: SafeArea(
               child: Column(
                 children: [
@@ -247,7 +281,7 @@ class _ResultPageState extends State<ResultPage> {
                           icon: const Icon(Icons.picture_as_pdf, size: 18),
                           label: Text(
                             _displayPaths.length > 1
-                                ? 'PDF 저장 (${_displayPaths.length}장)'
+                                ? 'PDF (${_displayPaths.length}장)'
                                 : 'PDF로 저장',
                             style: const TextStyle(fontSize: 13),
                           ),
@@ -283,22 +317,35 @@ class _ResultPageState extends State<ResultPage> {
     );
   }
 
-  Widget _buildFilterSelector() {
+  Widget _buildFilterAndRotateBar() {
     return SizedBox(
-      height: 56,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
+      height: 48,
+      child: Row(
         children: [
-          _buildFilterChip('원본', ScanFilter.original, Icons.image),
-          const SizedBox(width: 8),
-          _buildFilterChip('문서', ScanFilter.document, Icons.description),
-          const SizedBox(width: 8),
-          _buildFilterChip('흑백', ScanFilter.grayscale, Icons.filter_b_and_w),
-          const SizedBox(width: 8),
-          _buildFilterChip('밝게', ScanFilter.bright, Icons.brightness_high),
-          const SizedBox(width: 8),
-          _buildFilterChip('고대비', ScanFilter.highContrast, Icons.contrast),
+          Expanded(
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.only(left: 16),
+              children: [
+                _buildFilterChip('원본', ScanFilter.original, Icons.image),
+                const SizedBox(width: 6),
+                _buildFilterChip('문서', ScanFilter.document, Icons.description),
+              ],
+            ),
+          ),
+          // 회전 버튼
+          Container(
+            margin: const EdgeInsets.only(right: 8),
+            child: IconButton(
+              icon: const Icon(Icons.rotate_right, color: Colors.white70),
+              onPressed: _isProcessing ? null : _rotateImage,
+              tooltip: '90° 회전',
+              style: IconButton.styleFrom(
+                backgroundColor: Colors.white10,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -309,7 +356,7 @@ class _ResultPageState extends State<ResultPage> {
     return GestureDetector(
       onTap: () => _applyFilter(filter),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
         decoration: BoxDecoration(
           color: isSelected ? Colors.blue : Colors.white10,
           borderRadius: BorderRadius.circular(20),
@@ -321,12 +368,13 @@ class _ResultPageState extends State<ResultPage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (icon != null) ...[
-              Icon(icon, size: 16, color: isSelected ? Colors.white : Colors.white70),
-              const SizedBox(width: 6),
+              Icon(icon, size: 14, color: isSelected ? Colors.white : Colors.white70),
+              const SizedBox(width: 4),
             ],
             Text(
               label,
               style: TextStyle(
+                fontSize: 12,
                 color: isSelected ? Colors.white : Colors.white70,
                 fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
               ),
@@ -377,7 +425,6 @@ class _ResultPageState extends State<ResultPage> {
       final baseName = 'scan_${timestamp.year}${timestamp.month.toString().padLeft(2, '0')}${timestamp.day.toString().padLeft(2, '0')}_${timestamp.hour.toString().padLeft(2, '0')}${timestamp.minute.toString().padLeft(2, '0')}';
 
       if (_splitResult != null && _displayPaths.length > 1) {
-        // 분리된 모든 페이지 저장
         final savedPaths = <String>[];
         for (int i = 0; i < _displayPaths.length; i++) {
           final key = '${_displayPaths[i]}_${_selectedFilter.name}';
@@ -393,6 +440,7 @@ class _ResultPageState extends State<ResultPage> {
               backgroundColor: Colors.green[700],
             ),
           );
+          _returnToScanner();
         }
       } else {
         final savedPath = await _scanner.saveAsImage(
@@ -406,6 +454,7 @@ class _ResultPageState extends State<ResultPage> {
               backgroundColor: Colors.green[700],
             ),
           );
+          _returnToScanner();
         }
       }
     } catch (e) {
@@ -436,18 +485,19 @@ class _ResultPageState extends State<ResultPage> {
         title: title,
       );
 
-      if (savedPath != null && mounted) {
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('PDF 저장 완료: ${path.basename(savedPath)}'),
             backgroundColor: Colors.green[700],
           ),
         );
+        _returnToScanner();
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('PDF 저장 실패: $e')),
+          SnackBar(content: Text('PDF 저장 실패: $e'), duration: const Duration(seconds: 8)),
         );
       }
     } finally {
@@ -462,6 +512,7 @@ class _ResultPageState extends State<ResultPage> {
       } else {
         await Share.shareXFiles([XFile(_currentImagePath)]);
       }
+      if (mounted) _returnToScanner();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

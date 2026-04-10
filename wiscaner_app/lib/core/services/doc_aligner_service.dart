@@ -1,8 +1,10 @@
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:onnxruntime/onnxruntime.dart';
 import 'package:image/image.dart' as img;
+import 'document_scanner_service.dart';
 
 /// DocAligner(ONNX) 기반 문서/책 4꼭짓점 감지 서비스
 /// 모델: doc_aligner_book_v2.onnx — 바인더 노트 포함 합성 데이터 7,000장으로 fine-tuned
@@ -27,7 +29,7 @@ class DocAlignerService {
   static const String _modelAsset =
       'assets/models/doc_aligner_book_v2.onnx';
   static const int _inputSize = 256;
-  static const double _hasObjThreshold = 0.5;
+  static const double _hasObjThreshold = 0.6;
 
   /// 모델 초기화 (첫 사용 시 자동 호출)
   Future<void> init() async {
@@ -35,9 +37,11 @@ class DocAlignerService {
     _initialized = true;
     try {
       OrtEnv.instance.init();
+      final cores = Platform.numberOfProcessors;
+      final threads = (cores ~/ 2).clamp(1, 4);
       _sessionOptions = OrtSessionOptions()
-        ..setInterOpNumThreads(2)
-        ..setIntraOpNumThreads(2)
+        ..setInterOpNumThreads(threads)
+        ..setIntraOpNumThreads(threads)
         ..setSessionGraphOptimizationLevel(GraphOptimizationLevel.ortEnableAll);
 
       final rawAsset = await rootBundle.load(_modelAsset);
@@ -122,7 +126,8 @@ class DocAlignerService {
     }
   }
 
-  /// 카메라 Y plane(그레이스케일)에서 4꼭짓점 감지 (실시간 자동 스캔용)
+  /// 카메라 Y plane에서 4꼭짓점 감지 (실시간 자동 스캔용)
+  /// detectCorners(파일용)와 동일한 추론 경로 사용 — 회전/채널 문제 원천 제거
   Future<DocAlignerResult?> detectCornersFromYPlane(
     Uint8List yBytes, int srcWidth, int srcHeight, int bytesPerRow,
     {bool needsRotation = false, int sensorOrientation = 90}
@@ -131,40 +136,53 @@ class DocAlignerService {
     if (_session == null) return null;
 
     try {
+      // Y plane에서 직접 256x256 + 회전을 한 번에 수행 (고속)
+      // img.Image/copyRotate/copyResize 없이 직접 샘플링
       const planeSize = _inputSize * _inputSize;
       final inputData = Float32List(planeSize * 3);
 
-      final int effectiveW = needsRotation ? srcHeight : srcWidth;
-      final int effectiveH = needsRotation ? srcWidth : srcHeight;
-
-      final double scaleX = effectiveW / _inputSize;
-      final double scaleY = effectiveH / _inputSize;
-      final int maxSrcX = effectiveW - 1;
-      final int maxSrcY = effectiveH - 1;
+      // portrait 크기 결정
+      final int portW, portH;
+      if (needsRotation) {
+        portW = srcHeight; // 1080
+        portH = srcWidth;  // 1920
+      } else {
+        portW = srcWidth;
+        portH = srcHeight;
+      }
+      final double scaleX = portW / _inputSize;
+      final double scaleY = portH / _inputSize;
       final int yLen = yBytes.length;
-      final int srcHm1 = srcHeight - 1;
 
-      for (int y = 0; y < _inputSize; y++) {
-        final int baseSrcY = (y * scaleY).toInt().clamp(0, maxSrcY);
-        for (int x = 0; x < _inputSize; x++) {
-          final int baseSrcX = (x * scaleX).toInt().clamp(0, maxSrcX);
+      for (int oy = 0; oy < _inputSize; oy++) {
+        final int portY = (oy * scaleY).toInt().clamp(0, portH - 1);
+        for (int ox = 0; ox < _inputSize; ox++) {
+          final int portX = (ox * scaleX).toInt().clamp(0, portW - 1);
 
+          // portrait → landscape 역매핑 (Y plane 좌표)
           int rawX, rawY;
-          if (needsRotation) {
-            // 반시계 90도 회전 (원본 landscape → portrait)
-            rawX = srcHm1 - baseSrcY;
-            rawY = baseSrcX;
+          if (needsRotation && sensorOrientation == 90) {
+            // 시계 90도 회전의 역: portrait(px,py) → landscape(py, W-1-px)
+            //   여기서 W=portW=srcHeight
+            rawX = portY;
+            rawY = (srcWidth - 1 - portX).clamp(0, srcWidth - 1);
+          } else if (needsRotation && sensorOrientation == 270) {
+            // 반시계 90도의 역
+            rawX = (srcHeight - 1 - portY).clamp(0, srcHeight - 1);
+            rawY = portX;
           } else {
-            rawX = baseSrcX;
-            rawY = baseSrcY;
+            rawX = portX;
+            rawY = portY;
           }
 
           final idx = rawY * bytesPerRow + rawX;
           final val = (idx >= 0 && idx < yLen) ? yBytes[idx] / 255.0 : 0.0;
-          inputData[y * _inputSize + x] = val;
+          final outIdx = oy * _inputSize + ox;
+          inputData[outIdx] = val;
         }
       }
 
+      // 그레이스케일 → RGB 3채널 복제
       inputData.setRange(planeSize, planeSize * 2, inputData, 0);
       inputData.setRange(planeSize * 2, planeSize * 3, inputData, 0);
 
@@ -204,16 +222,14 @@ class DocAlignerService {
 
       for (final o in outputs) { o?.release(); }
 
+      // 4) 모델 출력 = portrait 이미지 기준 정규화 좌표 = CameraPreview 좌표
+      //    detectCorners와 동일 경로이므로 추가 변환 불필요
       final corners = <Offset>[];
       for (int i = 0; i < 4; i++) {
-        final ox = points[i * 2].clamp(0.0, 1.0);
-        final oy = points[i * 2 + 1].clamp(0.0, 1.0);
-        if (needsRotation && sensorOrientation == 90) {
-          // 입력을 반시계 90도로 넣었지만 CameraPreview는 시계 90도 → 좌우 반전 보정
-          corners.add(Offset(1.0 - ox, oy));
-        } else {
-          corners.add(Offset(ox, oy));
-        }
+        corners.add(Offset(
+          points[i * 2].clamp(0.0, 1.0),
+          points[i * 2 + 1].clamp(0.0, 1.0),
+        ));
       }
 
       return DocAlignerResult(corners, hasObj);

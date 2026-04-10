@@ -1,37 +1,41 @@
 # PROGRESS.md (현재 진행: 얇게 유지)
 
 ## Dashboard
-- Progress: 75%
-- Phase: UX 개선 완료, 실기기 설치 완료
-- Risk: 낮음 (기본 기능 + UX 개선 완료)
+- Progress: 80%
+- Phase: 버그 수정 및 최적화 (bug_fix_optimization_plan.md 기반)
+- Risk: 낮음 (안정성 개선 완료)
 
 ## Today Goal
-- improvement_plan.md 기반 UX 개선 구현 + 실기기 설치
+- bug_fix_optimization_plan.md 기반 Sprint 1~2 적용
 
-## What changed (Phase 2 - UX 개선)
-- 카메라 권한 처리 개선: permission_handler 추가, 거부 시 설정 이동 안내
-- 설정 화면 신규: 자동 스캔/저장 형식/이미지 품질/권한 상태/앱 정보
-- 필터 5종 확장: 원본/문서/흑백/밝게/고대비 (OpenCV + Dart fallback)
-- 홈 화면 개선: 다중 선택/파일 정보(날짜+크기)/이름 편집/이미지 뷰어(핀치줌)/빈 상태 UX
-- 스캔 UX: 촬영 플래시 효과(AnimatedOpacity), 품질 지표 위젯
-- 컴파일 에러 수정: convertTo API 수정, unused import 제거
+## What changed (Phase 3 - 버그 수정/최적화)
+- 카메라 전체화면 Cover 방식 + 가로/세로 회전 대응 (사이드바 컨트롤)
+- 투명 AppBar (extendBodyBehindAppBar)
+- 1.1 Mat 객체 dispose 보장: detectDocumentCorners, warpPerspective try-finally 강화
+- 1.3 카메라 스트림 중복 시작 방지: _isStreamStarting 플래그
+- 1.4 음성 인식 마이크 권한 처리: Permission.microphone 요청 추가
+- 1.5 파일 삭제 시 이미지 캐시 정리: imageCache.clear() 호출
+- 2.2 배치 모드 진행 표시: CropPage AppBar bottom에 LinearProgressIndicator
+- 3.2 ONNX 스레드 최적화: Platform.numberOfProcessors 기반 동적 설정
+
+## Previous (Phase 2 - UX 개선)
+- 카메라 권한 처리/설정 화면/필터 5종/홈 화면 개선/스캔 UX
 
 ## Previous (Phase 1 - 핵심 기능 이식)
-- Winote 스캐너 7개 파일 이식
-- Android APK 빌드 + 무선 ADB 설치
-- 카메라 전체화면/감지선 사각형 유지/갤러리 저장
+- Winote 스캐너 7개 파일 이식/Android APK 빌드/카메라 전체화면
 
 ## Commands & Results
-- `flutter analyze`: error 0, info 11
-- `flutter build apk --debug`: 성공 (33초)
+- `flutter analyze`: error 0 (test 제외), warning 3, info 16
+- `flutter build apk --debug`: 성공 (32초)
 - `adb install -r`: 핸드폰 설치 성공
 
 ## Open issues
-- 실기기에서 새 기능(필터/설정/홈 화면) 동작 확인 필요
-- 크롭 페이지 개선 (Phase 2 잔여)
-- OCR/클라우드/폴더 관리 (Phase 3 이후)
+- 2.3 크롭 페이지 UX (핀치줌/미세조정) - 후순위
+- 2.4 설정 저장/복원 확장 - 후순위
+- 3.3 이미지 캐싱 최적화 - 파일 많아지면 적용
+- OCR/클라우드/폴더 관리 (Phase 4 이후)
 
 ## Next
-1) 실기기에서 필터/설정/홈 화면 기능 테스트
-2) 크롭 페이지 UX 개선
-3) 안정화 및 에지케이스 처리
+1) 실기기에서 전체화면/가로모드/배치 진행바 테스트
+2) 크롭 페이지 UX 개선 (핀치줌)
+3) 설정 저장/복원 확장

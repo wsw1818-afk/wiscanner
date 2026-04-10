@@ -838,17 +838,19 @@ class _ScannerPageState extends State<ScannerPage> {
                 child: CameraPreview(_cameraController!),
               ),
 
-              // 문서 감지 오버레이 (카메라 프리뷰와 동일 영역에 배치)
+              // 문서 감지 오버레이 (cover 크롭 보정)
+              // 카메라 좌표(0~1)를 화면에 보이는 영역에 맞게 변환
               if (_autoMode && _smoothedCorners != null && _smoothedCorners!.length == 4)
-                Positioned(
-                  left: dx,
-                  top: dy,
-                  width: renderWidth,
-                  height: renderHeight,
+                Positioned.fill(
                   child: CustomPaint(
                     painter: _DetectionOverlayPainter(
                       corners: _smoothedCorners!,
                       isGood: _qualityInfo?['isGood'] == true,
+                      // cover 크롭 오프셋: 카메라 전체 이미지 중 잘린 비율
+                      cropOffsetX: dx < 0 ? -dx / renderWidth : 0,
+                      cropOffsetY: dy < 0 ? -dy / renderHeight : 0,
+                      cropScaleX: widgetWidth / renderWidth,
+                      cropScaleY: widgetHeight / renderHeight,
                     ),
                   ),
                 ),
@@ -1134,20 +1136,38 @@ class _ScanGuideOverlayPainter extends CustomPainter {
 }
 
 /// 문서 감지 결과를 카메라 프리뷰 위에 그리는 페인터
-/// corners는 정규화 좌표 (0~1), 카메라 프리뷰 영역과 동일 크기로 배치
+/// corners는 카메라 전체 이미지 기준 정규화 좌표 (0~1)
+/// cover 크롭 보정: 화면에 보이는 영역만큼 좌표를 변환
 class _DetectionOverlayPainter extends CustomPainter {
   final List<Offset> corners;
   final bool isGood;
+  // cover 크롭 보정 파라미터
+  final double cropOffsetX; // 잘린 왼쪽 비율 (0~0.x)
+  final double cropOffsetY; // 잘린 위쪽 비율
+  final double cropScaleX;  // 보이는 영역 / 전체 비율 (< 1.0)
+  final double cropScaleY;
 
-  _DetectionOverlayPainter({required this.corners, required this.isGood});
+  _DetectionOverlayPainter({
+    required this.corners,
+    required this.isGood,
+    this.cropOffsetX = 0,
+    this.cropOffsetY = 0,
+    this.cropScaleX = 1,
+    this.cropScaleY = 1,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
     if (corners.length != 4) return;
 
-    final pts = corners
-        .map((c) => Offset(c.dx * size.width, c.dy * size.height))
-        .toList();
+    // 카메라 좌표(0~1) → 화면 보이는 영역 픽셀 좌표
+    // 1) 좌표에서 크롭 오프셋 빼기: 잘린 부분 보정
+    // 2) 보이는 비율로 스케일: 전체→보이는 영역
+    final pts = corners.map((c) {
+      final x = (c.dx - cropOffsetX) / cropScaleX * size.width;
+      final y = (c.dy - cropOffsetY) / cropScaleY * size.height;
+      return Offset(x, y);
+    }).toList();
 
     final path = Path()
       ..moveTo(pts[0].dx, pts[0].dy)

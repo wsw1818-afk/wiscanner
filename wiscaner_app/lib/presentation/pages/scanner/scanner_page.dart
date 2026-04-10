@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'crop_page.dart';
 import '../../../core/services/document_scanner_service.dart';
 import '../../../core/services/doc_aligner_service.dart';
+import '../../../core/services/training_data_service.dart';
 
 /// 카메라 미리보기 + 촬영 / 파일 선택 페이지
 class ScannerPage extends StatefulWidget {
@@ -57,6 +58,12 @@ class _ScannerPageState extends State<ScannerPage> {
   // 촬영 피드백
   bool _showCapturedFeedback = false;
   bool _showCaptureFlash = false;
+
+  // 학습 데이터 수집용: 마지막 프레임 Y plane 보관
+  Uint8List? _lastYBytes;
+  int _lastYWidth = 0;
+  int _lastYHeight = 0;
+  int _lastYBytesPerRow = 0;
 
   // 터치 촬영
   bool _tapToCapture = false;
@@ -232,6 +239,12 @@ class _ScannerPageState extends State<ScannerPage> {
     final height = image.height;
     final bytesPerRow = yPlane.bytesPerRow;
 
+    // 학습 데이터 수집용 보관
+    _lastYBytes = Uint8List.fromList(yBytes);
+    _lastYWidth = width;
+    _lastYHeight = height;
+    _lastYBytesPerRow = bytesPerRow;
+
     final sensorOrientation = _cameras?.first.sensorOrientation ?? 0;
     final needsRotation = (sensorOrientation == 90 || sensorOrientation == 270)
         && width > height;
@@ -244,29 +257,28 @@ class _ScannerPageState extends State<ScannerPage> {
     bool needsRotation, int sensorOrientation,
   ) async {
     try {
-      // 전략 1: DocAligner (ONNX 딥러닝) — detectCorners와 동일 경로
-      final dlResult = await DocAlignerService.instance
-          .detectCornersFromYPlane(yBytes, width, height, bytesPerRow,
-              needsRotation: needsRotation,
-              sensorOrientation: sensorOrientation);
+      // OpenCV 기반 실시간 감지 (좌표가 정확함)
+      List<Offset>? corners;
+      try {
+        final cvCorners = await DocumentScannerService.instance
+            .detectCornersFromGrayscale(yBytes, width, height, bytesPerRow);
+        if (cvCorners.length == 4 && !_isDefaultCorners(cvCorners)) {
+          corners = cvCorners;
+        }
+      } catch (_) {}
+
+      // OpenCV 실패 시 DocAligner fallback
+      if (corners == null || _isDefaultCorners(corners)) {
+        final dlResult = await DocAlignerService.instance
+            .detectCornersFromYPlane(yBytes, width, height, bytesPerRow,
+                needsRotation: needsRotation,
+                sensorOrientation: sensorOrientation);
+        if (dlResult != null && dlResult.corners.length == 4) {
+          corners = dlResult.corners;
+        }
+      }
 
       if (!mounted) return;
-
-      List<Offset>? corners;
-      if (dlResult != null && dlResult.corners.length == 4) {
-        corners = dlResult.corners;
-      }
-
-      // 전략 2: OpenCV fallback (DocAligner 3회 연속 실패 시에만)
-      if ((corners == null || _isDefaultCorners(corners)) && _noDetectionCount >= 3) {
-        try {
-          final cvCorners = await DocumentScannerService.instance
-              .detectCornersFromGrayscale(yBytes, width, height, bytesPerRow);
-          if (cvCorners.length == 4 && !_isDefaultCorners(cvCorners)) {
-            corners = cvCorners;
-          }
-        } catch (_) {}
-      }
 
       final isDefault = corners == null || _isDefaultCorners(corners);
 
@@ -529,6 +541,8 @@ class _ScannerPageState extends State<ScannerPage> {
           }
         }
       } else {
+        // 학습 데이터 수집 (비동기, UI 블록 안 함)
+        _collectTrainingData(xFile.path);
         if (mounted) _navigateToCrop(xFile.path);
       }
     } catch (e) {
@@ -591,6 +605,22 @@ class _ScannerPageState extends State<ScannerPage> {
     _noDetectionCount = 0;
     _countdownTimer?.cancel();
     _countdownTimer = null;
+  }
+
+  void _collectTrainingData(String highResPath) {
+    if (_lastYBytes == null) return;
+    final sensorOrientation = _cameras?.first.sensorOrientation ?? 0;
+    final needsRotation = (sensorOrientation == 90 || sensorOrientation == 270)
+        && _lastYWidth > _lastYHeight;
+    TrainingDataService.instance.collectData(
+      yBytes: _lastYBytes!,
+      srcWidth: _lastYWidth,
+      srcHeight: _lastYHeight,
+      bytesPerRow: _lastYBytesPerRow,
+      highResImagePath: highResPath,
+      needsRotation: needsRotation,
+      sensorOrientation: sensorOrientation,
+    );
   }
 
   void _navigateToCrop(String imagePath) {
@@ -860,32 +890,51 @@ class _ScannerPageState extends State<ScannerPage> {
                   child: CustomPaint(painter: _ScanGuideOverlayPainter()),
                 ),
 
-              // 자동 모드 상태 표시
+              // 자동 모드 상태 + 좌표 로그
               if (_autoMode && _qualityInfo != null)
                 Positioned(
-                  top: 20, left: 20, right: 20,
+                  top: 16, left: 8, right: 8,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.5),
-                      borderRadius: BorderRadius.circular(20),
+                      color: Colors.black.withValues(alpha: 0.7),
+                      borderRadius: BorderRadius.circular(10),
                     ),
-                    child: Row(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(
-                          _qualityInfo!['isGood'] == true ? Icons.check_circle : Icons.search,
-                          color: _qualityInfo!['isGood'] == true ? Colors.green : Colors.white70,
-                          size: 18,
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              _qualityInfo!['isGood'] == true ? Icons.check_circle : Icons.search,
+                              color: _qualityInfo!['isGood'] == true ? Colors.green : Colors.white70,
+                              size: 16,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              _qualityInfo!['isGood'] == true
+                                  ? '감지됨 (s:$_stableFrameCount/$_requiredStableFrames)'
+                                  : '찾는 중...',
+                              style: TextStyle(
+                                color: _qualityInfo!['isGood'] == true ? Colors.green : Colors.white70,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(width: 6),
-                        Text(
-                          _qualityInfo!['isGood'] == true ? '문서 감지됨' : '문서를 찾고 있습니다...',
-                          style: TextStyle(
-                            color: _qualityInfo!['isGood'] == true ? Colors.green : Colors.white70,
-                            fontSize: 13,
+                        if (_smoothedCorners != null && _smoothedCorners!.length == 4) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            'TL(${_smoothedCorners![0].dx.toStringAsFixed(2)},${_smoothedCorners![0].dy.toStringAsFixed(2)}) '
+                            'TR(${_smoothedCorners![1].dx.toStringAsFixed(2)},${_smoothedCorners![1].dy.toStringAsFixed(2)}) '
+                            'BR(${_smoothedCorners![2].dx.toStringAsFixed(2)},${_smoothedCorners![2].dy.toStringAsFixed(2)}) '
+                            'BL(${_smoothedCorners![3].dx.toStringAsFixed(2)},${_smoothedCorners![3].dy.toStringAsFixed(2)}) '
+                            'sc:${(_qualityInfo!['score'] as num).toStringAsFixed(0)}',
+                            style: const TextStyle(color: Colors.yellow, fontSize: 9, fontFamily: 'monospace'),
                           ),
-                        ),
+                        ],
                       ],
                     ),
                   ),

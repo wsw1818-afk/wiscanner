@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
+import '../../../core/services/training_data_service.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -22,6 +24,10 @@ class _SettingsPageState extends State<SettingsPage> {
   String _storageInfo = '';
   bool _cameraGranted = false;
   bool _micGranted = false;
+
+  // 학습 데이터 수집
+  bool _trainingMode = false;
+  int _trainingCount = 0;
 
   @override
   void initState() {
@@ -57,6 +63,10 @@ class _SettingsPageState extends State<SettingsPage> {
       storageInfo = '확인 불가';
     }
 
+    final tdService = TrainingDataService.instance;
+    await tdService.init();
+    final tdCount = await tdService.getCount();
+
     if (mounted) {
       setState(() {
         _saveFormat = _prefs.getString('saveFormat') ?? 'png';
@@ -65,6 +75,8 @@ class _SettingsPageState extends State<SettingsPage> {
         _cameraGranted = cameraStatus.isGranted;
         _micGranted = micStatus.isGranted;
         _storageInfo = storageInfo;
+        _trainingMode = tdService.enabled;
+        _trainingCount = tdCount;
         _loaded = true;
       });
     }
@@ -160,6 +172,37 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
           ),
 
+          // ── 학습 데이터 수집 ──
+          _buildSectionHeader('학습 데이터 수집'),
+          SwitchListTile(
+            title: const Text('수집 모드'),
+            subtitle: Text(_trainingMode
+                ? '촬영 시 학습 데이터 자동 수집 중 ($_trainingCount개)'
+                : '끄면 일반 모드'),
+            value: _trainingMode,
+            onChanged: (v) async {
+              await TrainingDataService.instance.setEnabled(v);
+              setState(() => _trainingMode = v);
+            },
+            secondary: Icon(
+              Icons.model_training,
+              color: _trainingMode ? Colors.blue : null,
+            ),
+          ),
+          if (_trainingCount > 0) ...[
+            ListTile(
+              leading: const Icon(Icons.upload_file, color: Colors.green),
+              title: Text('데이터 내보내기 ($_trainingCount개)'),
+              subtitle: const Text('zip으로 압축 후 공유'),
+              onTap: _exportTrainingData,
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_sweep, color: Colors.red),
+              title: const Text('수집 데이터 삭제'),
+              onTap: _clearTrainingData,
+            ),
+          ],
+
           // ── 앱 정보 ──
           _buildSectionHeader('앱 정보'),
           const ListTile(
@@ -193,6 +236,71 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
       ),
     );
+  }
+
+  Future<void> _exportTrainingData() async {
+    try {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const Center(child: CircularProgressIndicator()),
+      );
+
+      final dataPath = await TrainingDataService.instance.getDataPath();
+      final dataDir = Directory(dataPath);
+
+      // zip 생성 (tar.gz 대신 단순 폴더 공유)
+      final files = await dataDir.list()
+          .where((f) => f.path.endsWith('.png') || f.path.endsWith('.json'))
+          .map((f) => XFile(f.path))
+          .toList();
+
+      if (mounted) Navigator.pop(context);
+
+      if (files.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('내보낼 데이터가 없습니다')),
+          );
+        }
+        return;
+      }
+
+      await Share.shareXFiles(files, subject: 'WiScanner 학습 데이터 (${files.length ~/ 2}개)');
+    } catch (e) {
+      if (mounted) Navigator.pop(context);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('내보내기 실패: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _clearTrainingData() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('수집 데이터 삭제'),
+        content: Text('$_trainingCount개의 학습 데이터를 모두 삭제하시겠습니까?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('취소')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('삭제', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true) {
+      await TrainingDataService.instance.clearData();
+      setState(() => _trainingCount = 0);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('학습 데이터 삭제 완료')),
+        );
+      }
+    }
   }
 
   void _showFormatPicker() {

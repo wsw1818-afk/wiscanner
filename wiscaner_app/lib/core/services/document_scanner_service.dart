@@ -348,8 +348,9 @@ class DocumentScannerService {
       final xMin = xs.reduce(math.min);
       final xMax = xs.reduce(math.max);
 
-      // 배경 포함 거부: 상단이 화면 최상단 3% 이내
-      if (yMin / wh < 0.03) continue;
+      // 화면 경계에 닿는 사각형 거부 (문서가 완전히 프레임 안에 있어야 함)
+      if (xMin / ww < 0.02 || (ww - xMax) / ww < 0.02) continue;
+      if (yMin / wh < 0.02 || (wh - yMax) / wh < 0.02) continue;
       // 너무 작거나(높이 20% 미만) 좁은(너비 15% 미만) 것 제외
       if (yMax - yMin < wh * 0.20) continue;
       if (xMax - xMin < ww * 0.15) continue;
@@ -443,13 +444,13 @@ class DocumentScannerService {
       }
       if (quad == null) continue;
 
-      // 배경 포함 quad 거부: 상단 y가 화면 5% 이내 = 배경 최상단 포함
+      // 화면 경계에 닿는 사각형 거부
       final yMin = quad.map((p) => p.dy).reduce(math.min);
       final yMax = quad.map((p) => p.dy).reduce(math.max);
-      if (yMin / wh < 0.05) {
-        // blob$i 거부: 배경 포함
-        continue;
-      }
+      final xMin = quad.map((p) => p.dx).reduce(math.min);
+      final xMax = quad.map((p) => p.dx).reduce(math.max);
+      if (xMin / ww < 0.02 || (ww - xMax) / ww < 0.02) continue;
+      if (yMin / wh < 0.02 || (wh - yMax) / wh < 0.02) continue;
       // 기본 유효성: 상단 40% 이내, 하단 60% 이상
       if (yMin / wh > 0.40 || yMax / wh < 0.60) continue;
 
